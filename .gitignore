@@ -1,0 +1,26 @@
+# ===== 敏感文件（绝对不要提交）=====
+配置淘宝联盟.md
+部署到服务器-操作小抄.md
+secret_check.txt
+tz_check.txt
+修复关联.ps1
+.env
+.env.*
+*.pem
+*.key
+
+# ===== 与本项目无关的其他项目 =====
+xianbao-clone/
+outputs/
+
+# ===== 工具与缓存 =====
+.workbuddy/
+node_modules/
+__pycache__/
+*.pyc
+_frames/
+
+# ===== 系统文件 =====
+Thumbs.db
+desktop.ini
+.DS_Store

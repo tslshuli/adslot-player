@@ -1,0 +1,254 @@
+      <p>本文整理数据库备份的选型、执行与恢复流程，重点是"恢复"而不是"备份"。多数事故不是因为没备份，而是因为需要恢复时才发现备份不可用、或者不知道恢复到哪个时间点。</p>
+
+      <p>文中命令以 MySQL / PostgreSQL 为例，其他数据库思路一致。生产环境的恢复操作必须在隔离环境先演练，确认无误后再动线上。</p>
+
+      <h2 id="s1">1 适用范围与前提</h2>
+
+      <h3>1.1 适用对象</h3>
+
+      <ul>
+        <li>关系型数据库：MySQL 5.7+ / 8.0、PostgreSQL 12+</li>
+        <li>部署形态：单机、主从、云托管实例（托管实例至少要做逻辑导出，不能只依赖厂商快照）</li>
+        <li>数据量：单库 500GB 以内可以走逻辑备份；再大要考虑物理备份或快照</li>
+      </ul>
+
+      <h3>1.2 前提条件</h3>
+
+      <ul>
+        <li>备份账号具备 <code>SELECT</code>、<code>RELOAD</code>、<code>LOCK TABLES</code>（MySQL）或 <code>REPLICATION</code> 权限</li>
+        <li>备份目录所在磁盘剩余空间不少于数据量的 3 倍</li>
+        <li>已开启 binlog / WAL 归档，且保留期覆盖最长恢复需求</li>
+      </ul>
+
+      <blockquote>没有验证过恢复的备份，只能算"有文件"，不能算"有备份"。这句话听着像口号，但每年都有团队栽在上面。</blockquote>
+
+      <h2 id="s2">2 备份类型与选型</h2>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>速度</th>
+            <th>恢复粒度</th>
+            <th>适用场景</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>逻辑全量（dump）</td>
+            <td>慢</td>
+            <td>库 / 表</td>
+            <td>中小库、跨版本迁移</td>
+          </tr>
+          <tr>
+            <td>物理全量（xtrabackup）</td>
+            <td>快</td>
+            <td>实例</td>
+            <td>大库、快速恢复</td>
+          </tr>
+          <tr>
+            <td>binlog / WAL</td>
+            <td>实时</td>
+            <td>时间点</td>
+            <td>误删恢复、主从同步</td>
+          </tr>
+          <tr>
+            <td>存储快照</td>
+            <td>极快</td>
+            <td>整盘</td>
+            <td>云环境、大版本变更前</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>实际部署通常是组合使用：每日全量 + 实时 binlog，恢复时先还原最近一次全量，再重放 binlog 到目标时间点。</p>
+
+      <h2 id="s3">3 全量备份</h2>
+
+      <h3>3.1 MySQL 逻辑备份</h3>
+
+      <pre><code>mysqldump -u backup -p \
+  --single-transaction \
+  --quick \
+  --routines --triggers --events \
+  --set-gtid-purged=OFF \
+  --databases app_db \
+  | gzip &gt; /backup/mysql/app_db_$(date +%F_%H%M).sql.gz</code></pre>
+
+      <p>几个参数不能省：<code>--single-transaction</code> 保证 InnoDB 表的一致性快照且不锁表；<code>--quick</code> 避免把大表一次性读进内存；<code>--routines --triggers --events</code> 否则存储过程、触发器会丢。</p>
+
+      <p><code>--set-gtid-purged=OFF</code> 是为了让导出的文件能在另一个实例上直接导入。如果要用于搭建从库，则应保留 GTID 信息。</p>
+
+      <h3>3.2 PostgreSQL 逻辑备份</h3>
+
+      <pre><code>pg_dump -U backup -Fc -Z 6 -f /backup/pg/app_db_$(date +%F).dump app_db</code></pre>
+
+      <p><code>-Fc</code> 输出自定义格式，支持并行恢复与选择性还原；<code>-Z 6</code> 压缩级别。纯 SQL 文本格式（<code>-Fp</code>）便于人工查看，但恢复慢、不支持并行。</p>
+
+      <h2 id="s4">4 增量：binlog 与 WAL</h2>
+
+      <p>全量备份只能恢复到备份那一刻。要恢复到"误删之前 1 分钟"，必须依赖日志。</p>
+
+      <pre><code># 确认 binlog 已开启
+SHOW VARIABLES LIKE 'log_bin';
+SHOW VARIABLES LIKE 'binlog_format';   # 应为 ROW
+
+# 查看当前写入位置
+SHOW MASTER STATUS;</code></pre>
+
+      <p><code>binlog_format</code> 必须是 <code>ROW</code>。用 <code>STATEMENT</code> 格式时，某些函数（如 <code>NOW()</code>、<code>UUID()</code>）会导致主从不一致，恢复重放也可能出错。</p>
+
+      <p>日志保留时长由 <code>binlog_expire_logs_seconds</code> 控制，默认 30 天。如果业务要求能回溯更久，要么调大，要么定期归档到对象存储。</p>
+
+      <h2 id="s5">5 存储与保留</h2>
+
+      <p>遵循 3-2-1：三份副本、两种介质、一份异地。落地时至少保证一份不在同一台物理机上、不在同一个可用区。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>备份对象</th>
+            <th>频率</th>
+            <th>保留</th>
+            <th>存放位置</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>全量逻辑备份</td>
+            <td>每日 02:00</td>
+            <td>30 天</td>
+            <td>本地 + 异地对象存储</td>
+          </tr>
+          <tr>
+            <td>binlog</td>
+            <td>实时</td>
+            <td>14 天</td>
+            <td>本地磁盘</td>
+          </tr>
+          <tr>
+            <td>周度归档</td>
+            <td>每周日</td>
+            <td>6 个月</td>
+            <td>异地对象存储</td>
+          </tr>
+          <tr>
+            <td>变更前快照</td>
+            <td>按需</td>
+            <td>变更后 7 天</td>
+            <td>云盘快照</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>注意"保留 30 天"不等于"能恢复 30 天前"。如果有备份失败未告警，中间某天缺失，恢复链就断了。所以必须有备份成功率的监控。</p>
+
+      <h2 id="s6">6 备份有效性验证</h2>
+
+      <p>验证分三层，从浅到深，建议每月至少做到第二层。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>层级</th>
+            <th>做法</th>
+            <th>能发现的问题</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>文件级</td>
+            <td>检查文件大小、gzip 完整性</td>
+            <td>文件截断、空文件</td>
+          </tr>
+          <tr>
+            <td>可导入</td>
+            <td>导入测试库，统计表数量与行数</td>
+            <td>语法不兼容、权限缺失、字符集错乱</td>
+          </tr>
+          <tr>
+            <td>可恢复</td>
+            <td>走完整恢复流程，业务方抽查数据</td>
+            <td>丢失索引、触发器、外键、序列值</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <pre><code># 快速检查 gzip 完整性
+gzip -t /backup/mysql/app_db_2026-11-13_0200.sql.gz &amp;&amp; echo OK
+
+# 统计备份内的表数量（MySQL 逻辑备份）
+zcat app_db_2026-11-13_0200.sql.gz | grep -c 'CREATE TABLE'</code></pre>
+
+      <h2 id="s7">7 恢复流程</h2>
+
+      <h3>7.1 误删单表</h3>
+
+      <p>不要直接在生产库上操作。先恢复到临时实例，再从临时实例导出目标表覆盖回生产。</p>
+
+      <pre><code># 1. 解出全量备份到临时实例
+gunzip -c app_db_2026-11-13.sql.gz | mysql -h temp-host -u root -p
+
+# 2. 重放 binlog 到误删前的时间点
+mysqlbinlog --stop-datetime="2026-11-14 09:41:00" \
+  /var/lib/mysql/mysql-bin.000123 \
+  | mysql -h temp-host -u root -p
+
+# 3. 单表导出并回写
+mysqldump -h temp-host -u root -p app_db orders &gt; orders_fix.sql
+mysql -u root -p app_db &lt; orders_fix.sql</code></pre>
+
+      <h3>7.2 整库误删</h3>
+
+      <p>先确认没有写入正在进行（停应用或切只读），否则恢复过程中产生的新数据会与备份冲突。恢复完成后再放开写入，并核对自增 ID 与序列是否连续。</p>
+
+      <h3>7.3 恢复到指定时间点</h3>
+
+      <p>关键在 <code>--stop-datetime</code> 的取值。判断依据是业务侧提供的最后一条正常数据的时间戳，而不是"你觉得大概什么时候删的"。宁可选晚一点、丢掉少量数据，也不要选早（会丢更多）。</p>
+
+      <blockquote>恢复前把当前库整体再备份一份，哪怕它已经是坏的。恢复过程中如果判断失误，这份"坏备份"是唯一能回到起点的东西。</blockquote>
+
+      <h2 id="s8">8 常见问题</h2>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>现象</th>
+            <th>原因</th>
+            <th>处理</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>导入报字符集错误</td>
+            <td>导出与导入端默认字符集不一致</td>
+            <td>显式指定 <code>--default-character-set=utf8mb4</code></td>
+          </tr>
+          <tr>
+            <td>恢复后自增 ID 冲突</td>
+            <td>未恢复 <code>AUTO_INCREMENT</code> 值</td>
+            <td>导入后 <code>ALTER TABLE ... AUTO_INCREMENT=</code></td>
+          </tr>
+          <tr>
+            <td>备份文件明显偏小</td>
+            <td>dump 中断但管道未报错</td>
+            <td>检查 <code>PIPESTATUS</code>，不要只看最后一行</td>
+          </tr>
+          <tr>
+            <td>binlog 重放报 duplicate entry</td>
+            <td>全量备份点与 binlog 起点不匹配</td>
+            <td>核对 <code>SHOW MASTER STATUS</code> 记录的位点</td>
+          </tr>
+          <tr>
+            <td>恢复极慢</td>
+            <td>逐条 INSERT、未关自动提交</td>
+            <td>导入时 <code>SET autocommit=0</code> 并分批 commit</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="s9">9 变更与文档维护</h2>
+
+      <p>本文档随实际演练结果更新。每次做恢复演练后，把遇到的问题补进"常见问题"表；每次调整备份策略，同步更新第 5 节的保留表。</p>
+
+      <p>建议每季度完整走一次恢复演练，选一台与生产同版本的干净机器，从零开始恢复，记录耗时。这个耗时是事故时的预期恢复时间，比任何承诺都可靠。</p>

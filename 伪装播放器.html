@@ -1,0 +1,2647 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>服务器日常巡检与故障处理手册 - 运维知识库</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --ink: #1a1a1a;
+    --ink-2: #444;
+    --ink-3: #888;
+    --line: #e6e6e6;
+    --brand: #1a4d8f;
+    --bg: #ffffff;
+    --rail-w: 288px;      /* 广告栏基准宽度 */
+  }
+
+  html, body {
+    background: #f7f7f5;
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    font-size: 15px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- 站点框架 ---------- */
+  .topbar {
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    z-index: 50;
+  }
+  .topbar-inner {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 28px;
+  }
+  .logo {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    color: var(--brand);
+    white-space: nowrap;
+  }
+  .logo span { color: var(--ink); font-weight: 400; font-size: 13px; margin-left: 6px; letter-spacing: 0; }
+  .nav { display: flex; gap: 22px; font-size: 14px; color: var(--ink-2); }
+  .nav a { color: inherit; text-decoration: none; padding: 18px 0; border-bottom: 2px solid transparent; }
+  .nav a.on { color: var(--brand); border-bottom-color: var(--brand); font-weight: 600; }
+  .nav a:hover { color: var(--brand); }
+  .topbar-right { margin-left: auto; font-size: 13px; color: var(--ink-3); white-space: nowrap; }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 28px 24px 140px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 268px;
+    gap: 32px;
+    align-items: start;
+  }
+
+  .crumb { font-size: 12.5px; color: var(--ink-3); margin-bottom: 14px; }
+  .crumb a { color: inherit; text-decoration: none; }
+  .crumb a:hover { text-decoration: underline; }
+
+  h1.art-title {
+    font-size: 27px;
+    line-height: 1.4;
+    font-weight: 700;
+    letter-spacing: -.2px;
+    margin-bottom: 12px;
+  }
+  .art-sub {
+    font-size: 15px;
+    color: var(--ink-2);
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 16px;
+  }
+  .art-meta {
+    font-size: 12.5px;
+    color: var(--ink-3);
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 26px;
+  }
+  .art-meta b { color: var(--ink-2); font-weight: 500; }
+
+  .article p { margin-bottom: 17px; color: #222; text-align: justify; }
+  .article h2 {
+    font-size: 18px;
+    margin: 30px 0 12px;
+    padding-left: 11px;
+    border-left: 3px solid var(--brand);
+    line-height: 1.5;
+  }
+  .article blockquote {
+    background: #f4f6f9;
+    border-left: 3px solid #c8d4e4;
+    padding: 14px 18px;
+    color: #33404f;
+    font-size: 14px;
+    margin: 20px 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .article ul { margin: 0 0 17px 22px; }
+  .article li { margin-bottom: 7px; }
+
+  .article h3 {
+    font-size: 15.5px;
+    margin: 22px 0 10px;
+    color: #1f2a37;
+    font-weight: 600;
+  }
+
+  .article pre {
+    background: #f6f7f9;
+    border: 1px solid #e4e7ec;
+    border-left: 3px solid #b9c4d2;
+    border-radius: 4px;
+    padding: 12px 14px;
+    font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+    font-size: 12.5px;
+    line-height: 1.72;
+    overflow-x: auto;
+    margin: 14px 0 18px;
+    color: #2a3441;
+    text-align: left;
+  }
+  .article pre code {
+    background: none;
+    padding: 0;
+    color: inherit;
+    font-family: inherit;
+  }
+  .article code {
+    background: #f2f4f7;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12.5px;
+    font-family: "Cascadia Code", Consolas, monospace;
+    color: #b03a2e;
+  }
+
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin: 20px 0 24px;
+  }
+  .data-table th, .data-table td {
+    border-bottom: 1px solid var(--line);
+    padding: 9px 10px;
+    text-align: left;
+  }
+  .data-table th { background: #fafafa; font-weight: 600; color: var(--ink-2); font-size: 13px; }
+  .data-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+  .up { color: #c0392b; }
+  .down { color: #1e8449; }
+
+  /* ---------- 正文内嵌广告（横幅） ---------- */
+  .inline-ad {
+    margin: 26px 0;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    height: 78px;
+    background: linear-gradient(100deg, #f0f3f7 0%, #e8edf4 55%, #f3f5f8 100%);
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+    gap: 14px;
+  }
+  .inline-ad .ia-tag {
+    position: absolute;
+    right: 8px;
+    top: 6px;
+    font-size: 9.5px;
+    color: #aaa;
+    letter-spacing: .5px;
+  }
+  .inline-ad .ia-icon {
+    width: 40px; height: 40px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #3f6ea8, #1a4d8f);
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 700;
+    flex: 0 0 auto;
+  }
+  .inline-ad .ia-txt { font-size: 13px; color: #3a4a5c; line-height: 1.55; }
+  .inline-ad .ia-txt b { display: block; font-size: 14.5px; color: #1a3350; margin-bottom: 1px; }
+  .inline-ad .ia-btn {
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: #fff;
+    background: #1a4d8f;
+    padding: 5px 13px;
+    border-radius: 3px;
+  }
+
+  /* ---------- 右侧竖版广告位 ---------- */
+  .side-ads {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 6px;
+  }
+
+  .l-ad {
+    position: relative;
+    width: 100%;
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, .09);
+    color: #fff;
+    user-select: none;
+    cursor: default;
+  }
+
+  /* 每个广告位里的多张"图"，轮换显示 */
+  .la-face {
+    position: absolute;
+    inset: 0;
+    padding: 26px 16px 14px;
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    transition: opacity .6s ease;
+    pointer-events: none;
+  }
+  .la-face.active { opacity: 1; pointer-events: auto; }
+
+  .la-tag {
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    font-size: 9px;
+    line-height: 1;
+    padding: 3px 4px;
+    background: rgba(0, 0, 0, .26);
+    color: #fff;
+    border-radius: 2px;
+    letter-spacing: .5px;
+    z-index: 3;
+  }
+
+  .la-btn {
+    display: block;
+    width: 100%;
+    text-align: center;
+    font-size: 11px;
+    padding: 5px 0;
+    border-radius: 3px;
+    font-weight: 600;
+    margin-top: auto;
+  }
+
+  /* A —— 招聘 */
+  .l-ad-a {
+    height: 176px;
+  }
+  .l-ad-a .la-face {
+    background: linear-gradient(165deg, #3d5a7e 0%, #25364c 62%, #1d2b3d 100%);
+  }
+  .l-ad-a .la-face:nth-of-type(2) {
+    background: linear-gradient(165deg, #4a5568 0%, #2c3440 62%, #212832 100%);
+  }
+  .l-ad-a .la-face:nth-of-type(3) {
+    background: linear-gradient(165deg, #2d4666 0%, #1b2c42 62%, #152333 100%);
+  }
+  .l-ad-a .la-kicker {
+    display: inline-block;
+    font-size: 9.5px;
+    background: #d94a3d;
+    color: #fff;
+    padding: 2px 6px;
+    border-radius: 2px;
+    letter-spacing: 2px;
+    margin-bottom: 8px;
+  }
+  .l-ad-a .la-title {
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.35;
+    letter-spacing: .5px;
+  }
+  .l-ad-a .la-price {
+    font-size: 25px;
+    font-weight: 800;
+    color: #ffc93c;
+    line-height: 1.1;
+    margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+    animation: pulseA 2.8s ease-in-out infinite;
+  }
+  @keyframes pulseA {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .74; }
+  }
+  .l-ad-a .la-desc {
+    font-size: 10px;
+    opacity: .74;
+    margin-top: 3px;
+    letter-spacing: .3px;
+  }
+  .l-ad-a .la-btn {
+    background: #fff;
+    color: #25364c;
+  }
+
+  /* B —— 培训认证 */
+  .l-ad-b {
+    height: 164px;
+  }
+  .l-ad-b .la-face {
+    background: linear-gradient(150deg, #63519a 0%, #463a78 45%, #352c5e 100%);
+    background-size: 160% 160%;
+    animation: driftB 7s ease-in-out infinite;
+  }
+  .l-ad-b .la-face:nth-of-type(2) {
+    background: linear-gradient(150deg, #7a4a6f 0%, #5c3555 45%, #43263e 100%);
+    background-size: 160% 160%;
+    animation: driftB 7s ease-in-out infinite;
+  }
+  @keyframes driftB {
+    0%, 100% { background-position: 0% 50%; }
+    50%      { background-position: 100% 50%; }
+  }
+  .l-ad-b .la-label {
+    font-size: 9.5px;
+    letter-spacing: 3px;
+    opacity: .7;
+    margin-bottom: 7px;
+  }
+  .l-ad-b .la-title {
+    font-size: 15.5px;
+    font-weight: 700;
+    line-height: 1.4;
+  }
+  .l-ad-b .la-desc {
+    font-size: 10px;
+    opacity: .72;
+    margin-top: 6px;
+    line-height: 1.5;
+  }
+  .l-ad-b .la-btn {
+    background: #ffd166;
+    color: #3a2f63;
+  }
+
+  /* C —— 资料下载 */
+  .l-ad-c {
+    height: 190px;
+  }
+  .l-ad-c .la-face {
+    background: linear-gradient(158deg, #24544f 0%, #173a35 60%, #102a26 100%);
+  }
+  .l-ad-c .la-face:nth-of-type(2) {
+    background: linear-gradient(158deg, #3d4f6b 0%, #26344a 60%, #1a2433 100%);
+  }
+  .l-ad-c .la-pdf {
+    display: inline-block;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    background: rgba(255, 255, 255, .14);
+    border: 1px solid rgba(255, 255, 255, .26);
+    padding: 3px 7px;
+    border-radius: 3px;
+    margin-bottom: 9px;
+  }
+  .l-ad-c .la-title {
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.35;
+  }
+  .l-ad-c .la-desc {
+    font-size: 10px;
+    opacity: .7;
+    margin-top: 6px;
+    line-height: 1.55;
+  }
+  .l-ad-c .la-btn {
+    background: #2fa895;
+    color: #fff;
+  }
+
+  /* ---------- 广告视频背景层 ---------- */
+  .la-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: 1;
+    opacity: .96;
+    filter: saturate(.86) brightness(.94);
+    pointer-events: none;
+  }
+
+  /* 有视频时，文字层换成透明遮罩，既压住画面又保证字看得清 */
+  .l-ad.has-video .la-face {
+    background: linear-gradient(180deg,
+      rgba(0, 0, 0, .04) 0%,
+      rgba(0, 0, 0, .20) 45%,
+      rgba(0, 0, 0, .52) 100%);
+    z-index: 2;
+  }
+
+  /* ---------- 侧栏 ---------- */
+  .wrap > aside {
+    position: sticky;
+    top: 76px;
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .wrap > aside::-webkit-scrollbar { width: 4px; }
+  .wrap > aside::-webkit-scrollbar-thumb {
+    background: #d6d6d6;
+    border-radius: 2px;
+  }
+  .wrap > aside::-webkit-scrollbar-track { background: transparent; }
+
+  .side-card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+  }
+  .side-card h3 {
+    font-size: 14px;
+    font-weight: 700;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 10px;
+  }
+  .side-list { list-style: none; }
+  .side-list li {
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 5px 0;
+    border-bottom: 1px dashed #f0f0f0;
+    color: #333;
+  }
+  .side-list li:last-child { border-bottom: none; }
+  .side-list .no {
+    display: inline-block;
+    width: 16px;
+    color: #bbb;
+    font-weight: 700;
+    font-size: 12px;
+  }
+  .side-list .no.hot { color: #c0392b; }
+  .side-list a {
+    color: #333;
+    text-decoration: none;
+  }
+  .side-list a:hover { color: var(--brand); }
+  .side-list.toc li { padding: 5px 0; font-size: 12.5px; }
+
+  .tag-cloud { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tag-cloud span {
+    font-size: 12px;
+    background: #f2f2f0;
+    color: #555;
+    padding: 3px 9px;
+    border-radius: 3px;
+  }
+
+  .footer-note {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 24px;
+    font-size: 12px;
+    color: #aaa;
+    border-top: 1px solid var(--line);
+    text-align: center;
+  }
+
+  /* ================= 左下角广告栏 ================= */
+  #adRail {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    width: calc(var(--rail-w) * var(--rail-scale, 1));
+    z-index: 999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: width .16s ease;
+  }
+
+  .rail-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 10.5px;
+    color: #b8b8b8;
+    letter-spacing: 1px;
+    padding: 0 2px 1px;
+    user-select: none;
+  }
+  .rail-head .rf {
+    cursor: pointer;
+    font-size: 12px;
+    color: #b8b8b8;
+    letter-spacing: 0;
+  }
+  .rail-head .rf:hover { color: var(--brand); }
+
+  .ad-slot {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border: 1px solid #e2e2e2;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: 0 1px 5px rgba(0, 0, 0, .07);
+  }
+
+  /* ---------- 假广告通用 ---------- */
+  .fake-ad {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    user-select: none;
+    cursor: default;
+  }
+  .fa-tag {
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    font-size: 9.5px;
+    line-height: 1;
+    padding: 3px 4px;
+    background: rgba(0, 0, 0, .3);
+    color: #fff;
+    border-radius: 2px;
+    letter-spacing: .5px;
+    z-index: 2;
+  }
+  .fa-title { font-size: 15px; font-weight: 700; letter-spacing: .3px; }
+  .fa-sub   { font-size: 11px; opacity: .85; margin-top: 2px; }
+  .fa-btn {
+    display: inline-block;
+    margin-top: 7px;
+    font-size: 11px;
+    padding: 3px 11px;
+    border-radius: 2px;
+    background: #fff;
+    color: #c0392b;
+    font-weight: 600;
+  }
+
+  /* 假广告 A —— 电商红 */
+  .fake-a {
+    background: linear-gradient(135deg, #e0503a 0%, #c0392b 62%, #a83226 100%);
+    color: #fff;
+    padding: 16px 14px 12px;
+  }
+  .fake-a::after {
+    content: "";
+    position: absolute;
+    top: -40%;
+    left: -60%;
+    width: 45%;
+    height: 180%;
+    background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,.22) 50%, rgba(255,255,255,0) 100%);
+    transform: rotate(18deg);
+    animation: sweepA 6.5s linear infinite;
+  }
+  @keyframes sweepA {
+    0%   { left: -60%; }
+    55%  { left: 130%; }
+    100% { left: 130%; }
+  }
+  .fake-a .round {
+    position: absolute;
+    right: -18px;
+    bottom: -22px;
+    width: 92px;
+    height: 92px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, .16);
+  }
+
+  /* 假广告 B —— 工具蓝 */
+  .fake-b {
+    background: linear-gradient(120deg, #f4f7fb 0%, #e6edf7 100%);
+    color: #1e3352;
+    padding: 14px;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+  }
+  .fake-b .fb-icon {
+    width: 38px;
+    height: 38px;
+    flex: 0 0 auto;
+    border-radius: 9px;
+    background: linear-gradient(140deg, #4a7fc1, #2b5c9e);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    font-weight: 700;
+    box-shadow: 0 2px 6px rgba(43, 92, 158, .28);
+    animation: breatheB 3.4s ease-in-out infinite;
+  }
+  @keyframes breatheB {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.05); }
+  }
+  .fake-b .fb-main { min-width: 0; }
+  .fake-b .fa-title { font-size: 13.5px; color: #17293f; }
+  .fake-b .fa-sub { font-size: 10.5px; color: #63788f; opacity: 1; }
+  .fake-b .fa-btn {
+    position: absolute;
+    right: 12px;
+    bottom: 11px;
+    margin: 0;
+    background: #2b5c9e;
+    color: #fff;
+    font-size: 10.5px;
+    padding: 3px 10px;
+  }
+
+  /* 假广告 C —— 内容站自营推广位 */
+  .fake-c {
+    background: linear-gradient(150deg, #fbfbf9 0%, #f0efeb 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 2px;
+  }
+  .fake-c::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: linear-gradient(180deg, #1a4d8f, #4a7fc1);
+  }
+  .fake-c .fc-main { font-size: 13px; color: #2a3f57; font-weight: 600; letter-spacing: .5px; }
+  .fake-c .fc-sub  { font-size: 10.5px; color: #96999e; }
+  .fake-c .fc-btn {
+    margin-top: 6px;
+    font-size: 10.5px;
+    color: #fff;
+    background: #1a4d8f;
+    padding: 3px 11px;
+    border-radius: 2px;
+    letter-spacing: .5px;
+  }
+
+  /* ---------- 视频舞台 ---------- */
+  #adStage {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    background: #101010;
+    overflow: hidden;
+  }
+
+  #vid {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+    /* 日常降低鲜艳度，画面不那么扎眼 */
+    filter: saturate(.82) contrast(.96) brightness(.94);
+    transition: filter .25s ease;
+  }
+  /* 隐蔽模式：压暗压灰，远看像一张静态插图 */
+  #vid.mask {
+    filter: saturate(.3) contrast(.74) brightness(.8);
+  }
+
+  .ad-badge {
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    font-size: 9.5px;
+    line-height: 1;
+    padding: 3px 4px;
+    background: rgba(0, 0, 0, .3);
+    color: #fff;
+    border-radius: 2px;
+    letter-spacing: .5px;
+    pointer-events: none;
+    user-select: none;
+    z-index: 2;
+  }
+
+  .ad-close {
+    position: absolute;
+    right: 5px;
+    top: 5px;
+    width: 16px;
+    height: 16px;
+    line-height: 14px;
+    text-align: center;
+    font-size: 12px;
+    color: #ddd;
+    background: rgba(0, 0, 0, .34);
+    border-radius: 50%;
+    cursor: pointer;
+    user-select: none;
+    z-index: 4;
+  }
+  .ad-close:hover { background: rgba(0, 0, 0, .6); color: #fff; }
+
+  #adEmpty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    background: #fbfbfb;
+    color: #b0b0b0;
+    font-size: 12px;
+    text-align: center;
+    padding: 10px;
+    line-height: 1.5;
+    z-index: 3;
+  }
+  #adEmpty .hint { font-size: 10.5px; color: #c8c8c8; }
+  #adEmpty.hide { display: none; }
+
+  #adCtrl {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 6px;
+    background: linear-gradient(to top, rgba(0, 0, 0, .72), rgba(0, 0, 0, 0));
+    opacity: 0;
+    transition: opacity .15s;
+    font-size: 11px;
+    color: #ddd;
+    user-select: none;
+    z-index: 4;
+  }
+  #adStage:hover #adCtrl { opacity: 1; }
+
+  #adCtrl .btn { cursor: pointer; padding: 0 2px; font-size: 11px; line-height: 1; }
+  #adCtrl .btn:hover { color: #fff; }
+
+  #seek {
+    flex: 1;
+    height: 3px;
+    appearance: none;
+    -webkit-appearance: none;
+    background: rgba(255, 255, 255, .28);
+    border-radius: 2px;
+    cursor: pointer;
+    min-width: 26px;
+  }
+  #seek::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 8px; height: 8px; border-radius: 50%; background: #fff;
+  }
+  #seek::-moz-range-thumb {
+    width: 8px; height: 8px; border: 0; border-radius: 50%; background: #fff;
+  }
+
+  #clock { font-variant-numeric: tabular-nums; opacity: .8; font-size: 10px; }
+
+  #dropHint {
+    position: fixed;
+    inset: 0;
+    background: rgba(255, 255, 255, .9);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    font-size: 15px;
+    color: var(--brand);
+    border: 3px dashed #9db4d0;
+    border-radius: 8px;
+    pointer-events: none;
+  }
+  #dropHint.on { display: flex; }
+
+  /* 离开页面时整条广告栏消失；h 手动隐藏 */
+  #adRail.away,
+  #adRail.hidden { display: none; }
+
+  /* 极简操作反馈 */
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    transform: translateX(-50%);
+    background: rgba(28, 28, 28, .84);
+    color: #eee;
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 4px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .18s;
+    z-index: 3000;
+    letter-spacing: .3px;
+  }
+  #toast.on { opacity: 1; }
+
+  /* ---------- 直播源面板 ---------- */
+  #livePanel {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .34);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 4000;
+  }
+  #livePanel.on { display: flex; }
+
+  .lp-box {
+    width: 460px;
+    max-width: calc(100vw - 40px);
+    background: #fff;
+    border-radius: 6px;
+    padding: 18px 20px 16px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .22);
+    font-size: 14px;
+  }
+  .lp-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-weight: 700;
+    margin-bottom: 12px;
+    color: #222;
+  }
+  .lp-esc { font-size: 11px; font-weight: 400; color: #aaa; }
+  #liveInput {
+    width: 100%;
+    border: 1px solid #d8d8d8;
+    border-radius: 4px;
+    padding: 9px 11px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    color: #222;
+    background: #fcfcfc;
+  }
+  #liveInput:focus { border-color: #1a4d8f; background: #fff; }
+  .lp-foot {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 12px;
+  }
+  #liveGo {
+    background: #1a4d8f;
+    color: #fff;
+    border: 0;
+    border-radius: 4px;
+    padding: 7px 18px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  #liveGo:hover { background: #16417a; }
+  #liveGo:disabled { background: #9aa9bb; cursor: default; }
+  #liveMsg { font-size: 12px; color: #888; line-height: 1.5; }
+  #liveMsg.err { color: #c0392b; }
+  #liveMsg.ok { color: #1e8449; }
+  .lp-tip { margin-top: 10px; font-size: 11px; color: #b0b0b0; }
+
+  @media (max-width: 860px) {
+    .wrap { grid-template-columns: 1fr; }
+    .nav { display: none; }
+    .wrap > aside {
+      position: static;
+      max-height: none;
+      overflow: visible;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="logo">运维知识库<span>Ops Wiki</span></div>
+    <nav class="nav">
+      <a href="#" class="on">手册</a>
+      <a href="#">规范</a>
+      <a href="#">故障库</a>
+      <a href="#">变更记录</a>
+    </nav>
+    <div class="topbar-right">2026-11-14 星期五</div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  
+
+  <main>
+    <div class="crumb"><a href="#">知识库</a> &rsaquo; <a href="#">运维手册</a> &rsaquo; 巡检</div>
+
+    <h1 class="art-title" id="docTitle">服务器日常巡检与故障处理手册</h1>
+
+    <div class="art-sub" id="docSub">
+      覆盖系统层与服务层的日常巡检项、判读阈值与常见故障处置流程，适用于自建机房与云上独立部署。
+    </div>
+
+    <div class="art-meta" id="docMeta">
+      <span>文档编号 <b>OPS-MAN-014</b></span>
+      <span>版本 <b>v3.4</b></span>
+      <span>更新 2026-11-12</span>
+      <span>维护 <b>基础设施组</b></span>
+    </div>
+
+    <article class="article" id="docBody">
+      <p>本文档整理自日常运维过程中的巡检项、判读标准与处置流程，适用于机房自建及云上独立部署的 Linux 服务器。内容以可执行命令和明确阈值为主，便于交接与复用。</p>
+
+      <p>文档中的命令默认以 <code>root</code> 或具备 <code>sudo</code> 权限的账号执行。涉及生产环境的操作（重启服务、清理文件、调整内核参数）请先在测试环境验证，并保留操作记录。</p>
+
+      <h2 id="s1">1 适用范围与约定</h2>
+
+      <h3>1.1 适用对象</h3>
+
+      <ul>
+        <li>操作系统：CentOS 7 / Rocky Linux 8+ / Ubuntu 20.04+</li>
+        <li>部署形态：单机部署、主备部署、容器化部署（Docker / Podman）</li>
+        <li>不覆盖：Kubernetes 集群运维、云厂商托管数据库的底层维护</li>
+      </ul>
+
+      <h3>1.2 术语约定</h3>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>术语</th>
+            <th>含义</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>巡检</td>
+            <td>按固定周期对系统状态做只读检查，不做任何变更</td>
+          </tr>
+          <tr>
+            <td>阈值</td>
+            <td>触发人工介入的指标上限，本文档中的数值为默认建议值</td>
+          </tr>
+          <tr>
+            <td>处置</td>
+            <td>对异常项做变更操作，须记录时间、操作人、变更内容</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="s2">2 巡检周期与责任划分</h2>
+
+      <p>巡检分日常、周度、月度三档。日常项只做读取和记录，发现问题走告警流程；周度、月度项包含例行清理与验证，可以安排在业务低峰期执行。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>巡检项</th>
+            <th>周期</th>
+            <th>执行方式</th>
+            <th>记录位置</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>硬件与负载状态</td>
+            <td>每日</td>
+            <td>手动 / 脚本</td>
+            <td>巡检表</td>
+          </tr>
+          <tr>
+            <td>磁盘与 inode</td>
+            <td>每日</td>
+            <td>脚本采集</td>
+            <td>监控平台</td>
+          </tr>
+          <tr>
+            <td>服务进程与端口</td>
+            <td>每日</td>
+            <td>脚本采集</td>
+            <td>监控平台</td>
+          </tr>
+          <tr>
+            <td>日志切割与清理</td>
+            <td>每周</td>
+            <td>手动确认</td>
+            <td>变更单</td>
+          </tr>
+          <tr>
+            <td>系统补丁评估</td>
+            <td>每月</td>
+            <td>手动</td>
+            <td>变更单</td>
+          </tr>
+          <tr>
+            <td>备份可恢复性验证</td>
+            <td>每月</td>
+            <td>实际恢复一次</td>
+            <td>演练记录</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <blockquote>备份"看起来成功"和"真的能恢复"是两件事。每月至少挑一台机器做一次完整恢复，恢复不出来等于没备份。</blockquote>
+
+      <h2 id="s3">3 系统层巡检</h2>
+
+      <h3>3.1 负载与 CPU</h3>
+
+      <pre><code>uptime
+top -bn1 | head -20
+mpstat -P ALL 1 3      # 需要 sysstat</code></pre>
+
+      <p>判读标准：<code>load average</code> 的 1 分钟值连续 5 分钟超过 CPU 核数的 1.5 倍，视为异常。注意 15 分钟值仍然很高但 1 分钟值已回落的情况，通常说明压力刚过去，先观察不要立即处置。</p>
+
+      <p>若 <code>%sy</code>（内核态）持续偏高，优先排查中断是否集中在单核；若 <code>%wa</code>（IO 等待）偏高，转去看磁盘章节。</p>
+
+      <h3>3.2 内存</h3>
+
+      <pre><code>free -h
+vmstat 1 5</code></pre>
+
+      <p>看 <code>available</code> 而不是 <code>free</code>。<code>free</code> 数值低是正常现象，Linux 会主动用空闲内存做缓存。<code>available</code> 低于总内存的 10% 时，结合 <code>vmstat</code> 的 <code>si/so</code> 两列判断：两列长期非零说明已经在换页，需要处理。</p>
+
+      <h3>3.3 磁盘空间</h3>
+
+      <pre><code>df -hT
+du -sh /var/* 2>/dev/null | sort -rh | head -10
+lsof +L1 | head -20      # 已删除但被占用的文件</code></pre>
+
+      <p>使用率 80% 预警，90% 处理。常见的大文件位置如下，清理前确认是否还在写入。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>路径</th>
+            <th>常见内容</th>
+            <th>处理方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>/var/log</td>
+            <td>系统与应用日志</td>
+            <td>配 logrotate，确认切割后再删</td>
+          </tr>
+          <tr>
+            <td>/var/lib/docker</td>
+            <td>镜像与容器层</td>
+            <td>prune 无标签镜像</td>
+          </tr>
+          <tr>
+            <td>/tmp</td>
+            <td>临时文件</td>
+            <td>按 mtime 清理，注意挂载类型</td>
+          </tr>
+          <tr>
+            <td>/home/*/.cache</td>
+            <td>用户缓存</td>
+            <td>确认用户无任务后清理</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><code>df</code> 显示已满但 <code>du</code> 统计不出来，说明有进程持有已删除的文件句柄，用 <code>lsof +L1</code> 定位，重启对应进程即可释放。</p>
+
+      <h3>3.4 inode 使用率</h3>
+
+      <pre><code>df -i</code></pre>
+
+      <p>小文件多的场景（邮件队列、会话文件、临时分片）容易出现空间还有、inode 先满。典型表现是新文件无法创建但 <code>df -h</code> 看着很正常。</p>
+
+      <h2 id="s4">4 服务层巡检</h2>
+
+      <h3>4.1 服务状态</h3>
+
+      <pre><code>systemctl --failed
+systemctl status nginx --no-pager
+systemctl list-units --type=service --state=running</code></pre>
+
+      <h3>4.2 端口与连接</h3>
+
+      <pre><code>ss -tlnp
+ss -s
+ss -ant | awk '{print $1}' | sort | uniq -c | sort -rn | head</code></pre>
+
+      <p>重点看 <code>TIME-WAIT</code> 与 <code>CLOSE-WAIT</code> 的数量。前者偏高通常是短连接过多，可以调内核参数缓解；后者偏高说明对端已关闭但本端没释放，多半是应用没有正确关闭连接，要从代码侧处理。</p>
+
+      <h3>4.3 文件句柄</h3>
+
+      <pre><code>cat /proc/sys/fs/file-nr
+ulimit -n
+ls /proc/&lt;pid&gt;/fd | wc -l</code></pre>
+
+      <p>第一列是已分配句柄数，接近上限时新连接会被拒绝。调整 <code>LimitNOFILE</code> 后必须重启对应服务才生效，<code>systemctl reload</code> 不够。</p>
+
+      <h2 id="s5">5 日志检查</h2>
+
+      <pre><code>journalctl -p err --since "24 hours ago"
+tail -n 200 /var/log/nginx/error.log
+awk '$9 ~ /^5/ {print $7}' /var/log/nginx/access.log | sort | uniq -c | sort -rn | head</code></pre>
+
+      <p>最后一条用于统计 5xx 按 URL 聚合，能快速定位是全局故障还是单个接口的问题。日志量大的机器建议先 <code>tail</code> 再处理，避免 <code>cat</code> 大文件拖慢机器。</p>
+
+      <p>logrotate 的最小可用配置：</p>
+
+      <pre><code>/var/log/app/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}</code></pre>
+
+      <p><code>copytruncate</code> 适用于程序不支持重开日志文件句柄的情况，代价是切割瞬间可能丢少量日志。支持 <code>SIGHUP</code> 的程序应该改用 <code>create</code> 配合 <code>postrotate</code>。</p>
+
+      <h2 id="s6">6 常见故障处置</h2>
+
+      <p>下表按现象索引。处置列的步骤按顺序执行，前一步没解决问题再做下一步。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>现象</th>
+            <th>可能原因</th>
+            <th>处置</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>磁盘满，写入失败</td>
+            <td>日志未切割 / 镜像堆积</td>
+            <td>lsof 查句柄 → 清理 → 配 logrotate</td>
+          </tr>
+          <tr>
+            <td>服务在但无响应</td>
+            <td>进程假死、死锁</td>
+            <td>抓栈 → 重启 → 保留现场</td>
+          </tr>
+          <tr>
+            <td>CPU 持续 100%</td>
+            <td>死循环、异常进程</td>
+            <td>top 定位 → 确认归属 → 处理</td>
+          </tr>
+          <tr>
+            <td>新连接被拒绝</td>
+            <td>文件句柄或端口耗尽</td>
+            <td>查 file-nr / ulimit → 调整 → 重启</td>
+          </tr>
+          <tr>
+            <td>时间漂移</td>
+            <td>NTP 未同步</td>
+            <td>chronyc sources → 重新同步</td>
+          </tr>
+          <tr>
+            <td>磁盘 IO 高</td>
+            <td>大量小文件读写、swap</td>
+            <td>iostat 定位设备 → 查进程 io</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>6.1 服务假死的处理顺序</h3>
+
+      <p>不要上来就重启。先留证据：</p>
+
+      <pre><code>ps -eo pid,ppid,stat,wchan,cmd --sort=-%cpu | head -20
+cat /proc/&lt;pid&gt;/stack          # 需要 root
+gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</code></pre>
+
+      <p>拿到栈之后再重启。没有栈的故障复盘会变成猜谜，同样的问题会反复出现。</p>
+
+      <h2 id="s7">7 备份与恢复</h2>
+
+      <p>遵循 3-2-1 原则：三份副本、两种介质、一份异地。落地时至少保证有一份不在同一台物理机上。</p>
+
+      <pre><code>rsync -avz --delete --exclude='*.tmp' \
+      /data/ backup@10.0.0.12:/backup/data/</code></pre>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>备份对象</th>
+            <th>频率</th>
+            <th>保留</th>
+            <th>验证方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>业务数据目录</td>
+            <td>每日</td>
+            <td>30 天</td>
+            <td>每月恢复一次</td>
+          </tr>
+          <tr>
+            <td>数据库全量</td>
+            <td>每日</td>
+            <td>14 天</td>
+            <td>导入测试库校验</td>
+          </tr>
+          <tr>
+            <td>配置文件</td>
+            <td>变更时</td>
+            <td>永久</td>
+            <td>版本库对比</td>
+          </tr>
+          <tr>
+            <td>系统镜像</td>
+            <td>每月</td>
+            <td>3 个版本</td>
+            <td>试启动</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <blockquote>恢复演练要真的恢复到一台干净的机器上。在同机器上解压看文件在不在，验证不了依赖、权限和启动顺序。</blockquote>
+
+      <h2 id="s8">8 附录：常用命令速查</h2>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>用途</th>
+            <th>命令</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>查看端口占用</td>
+            <td><code>ss -tlnp | grep :80</code></td>
+          </tr>
+          <tr>
+            <td>查看进程资源</td>
+            <td><code>pidstat -p &lt;pid&gt; 1 5</code></td>
+          </tr>
+          <tr>
+            <td>磁盘 IO 分布</td>
+            <td><code>iostat -x 1 5</code></td>
+          </tr>
+          <tr>
+            <td>网络丢包</td>
+            <td><code>ss -i</code></td>
+          </tr>
+          <tr>
+            <td>内核参数</td>
+            <td><code>sysctl -a | grep net.core</code></td>
+          </tr>
+          <tr>
+            <td>启动耗时</td>
+            <td><code>systemd-analyze blame</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="s9">9 文档维护</h2>
+
+      <p>本文档随实际处置经验更新。新增故障案例时，按"现象—原因—处置—验证"四段写，不要只写结论，否则半年后没人看得懂当时为什么这么处理。</p>
+
+      <p>阈值部分（80%、90%、1.5 倍核数）是通用建议值，实际部署应按业务特点调整。业务侧对延迟敏感的场景，IO 与连接数的阈值应当收紧。</p>
+    </article>
+  </main>
+
+  <aside>
+    <div class="side-card">
+      <h3>本页目录</h3>
+      <ul class="side-list toc" id="docToc">
+        <li><a href="#s1">1 适用范围与约定</a></li>
+        <li><a href="#s2">2 巡检周期与责任划分</a></li>
+        <li><a href="#s3">3 系统层巡检</a></li>
+        <li><a href="#s4">4 服务层巡检</a></li>
+        <li><a href="#s5">5 日志检查</a></li>
+        <li><a href="#s6">6 常见故障处置</a></li>
+        <li><a href="#s7">7 备份与恢复</a></li>
+        <li><a href="#s8">8 附录：常用命令速查</a></li>
+        <li><a href="#s9">9 文档维护</a></li>
+      </ul>
+    </div>
+
+    
+  <!-- 右侧竖版广告（每组多张，自动轮换） -->
+    <aside class="side-ads">
+
+      <div class="l-ad l-ad-a">
+        <span class="la-tag">广告</span>
+
+        <div class="la-face active">
+          <div class="la-kicker">急 招</div>
+          <div class="la-title">仓储分拣<br>长期工</div>
+          <div class="la-price">6-9K</div>
+          <div class="la-desc">包住 · 日结可选</div>
+          <div class="la-btn">投递简历</div>
+        </div>
+
+        <div class="la-face">
+          <div class="la-kicker">急 招</div>
+          <div class="la-title">在线客服<br>双休岗</div>
+          <div class="la-price">5-7K</div>
+          <div class="la-desc">五险一金 · 不外出</div>
+          <div class="la-btn">立即咨询</div>
+        </div>
+
+        <div class="la-face">
+          <div class="la-kicker">急 招</div>
+          <div class="la-title">货运司机<br>城配</div>
+          <div class="la-price">8-12K</div>
+          <div class="la-desc">自带车优先 · 月结</div>
+          <div class="la-btn">查看详情</div>
+        </div>
+      </div>
+
+      <div class="l-ad l-ad-b">
+        <span class="la-tag">广告</span>
+
+        <div class="la-face active">
+          <div class="la-label">职业认证</div>
+          <div class="la-title">系统运维工程师</div>
+          <div class="la-desc">线上考 · 每月一期<br>考过可申领补贴</div>
+          <div class="la-btn">领取大纲</div>
+        </div>
+
+        <div class="la-face">
+          <div class="la-label">职业认证</div>
+          <div class="la-title">云计算运维</div>
+          <div class="la-desc">当月可考 · 通过率高<br>证书全国通用</div>
+          <div class="la-btn">0 元试听</div>
+        </div>
+      </div>
+
+      <div class="l-ad l-ad-c">
+        <span class="la-tag">广告</span>
+
+      <div class="la-face active">
+        <div class="la-pdf">PDF</div>
+        <div class="la-title">监控方案<br>实战手册</div>
+        <div class="la-desc">Prometheus / Grafana<br>共 96 页</div>
+        <div class="la-btn">免费下载</div>
+      </div>
+
+      <div class="la-face">
+        <div class="la-pdf">PDF</div>
+        <div class="la-title">容器迁移<br>指南</div>
+        <div class="la-desc">含配置模板<br>42 页 · 可直接套用</div>
+        <div class="la-btn">免费下载</div>
+      </div>
+      </div>
+
+    </aside>
+
+    <div class="side-card">
+      <h3>相关文档</h3>
+      <ul class="side-list">
+        <li>数据库备份与恢复操作指南 v2.1</li>
+        <li>网络设备配置变更流程</li>
+        <li>日志规范与字段定义</li>
+        <li>监控告警阈值说明</li>
+        <li>应急响应联系人清单</li>
+      </ul>
+      <p style="font-size:11.5px;color:#aaa;line-height:1.7;margin:10px 0 0;">
+        本页最后更新 2026-11-12 · 基础设施组
+      </p>
+    </div>
+  
+  </aside>
+</div>
+
+<div class="footer-note">
+  运维知识库 · 内部资料 · 请勿外传
+</div>
+
+<!-- ==================== 左下角广告栏：视频藏在三个广告位之中 ==================== -->
+<div id="adRail">
+
+  <div class="rail-head">
+    <span>推广</span>
+    <span class="rf" id="railRefresh" title="换个位置">↻</span>
+  </div>
+
+  <!-- 广告位 1（视频默认在这里） -->
+  <div class="ad-slot">
+
+    <div class="fake-ad fake-a">
+      <div class="fa-tag">广告</div>
+      <div class="round"></div>
+      <div class="fa-title">云主机秒杀</div>
+      <div class="fa-sub">限时 3 折 · 新用户专享</div>
+      <div class="fa-btn">立即抢购</div>
+    </div>
+
+    <!-- 视频舞台 -->
+    <div id="adStage">
+      <video id="vid" muted playsinline preload="metadata"></video>
+
+      <div class="ad-badge">广告</div>
+      <div class="ad-close" id="adClose" title="关闭广告">×</div>
+
+      <div id="adEmpty">
+        拖入视频 · 或按 L 接入直播
+        <div class="hint">本地文件 / flv / m3u8 均可</div>
+      </div>
+
+      <div id="adCtrl">
+        <span class="btn" id="btnPlay">▶</span>
+        <input id="seek" type="range" min="0" max="1000" value="0" step="1">
+        <span id="clock">0:00</span>
+        <span class="btn" id="btnMute">🔇</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 广告位 2 -->
+  <div class="ad-slot">
+    <div class="fake-ad fake-b">
+      <div class="fa-tag">广告</div>
+      <div class="fb-icon">D</div>
+      <div class="fb-main">
+        <div class="fa-title">文档助手 Pro</div>
+        <div class="fa-sub">本地处理 · 不上传云端</div>
+      </div>
+      <div class="fa-btn">免费下载</div>
+    </div>
+  </div>
+
+  <!-- 广告位 3 -->
+  <div class="ad-slot">
+    <div class="fake-ad fake-c">
+      <div class="fa-tag">广告</div>
+      <div class="fc-main">云服务器特惠</div>
+      <div class="fc-sub">2C4G 5M · 首年 99 元</div>
+      <div class="fc-btn">立即选购</div>
+    </div>
+  </div>
+
+</div>
+
+<div id="dropHint">松手就播放</div>
+<div id="toast"></div>
+
+<!-- 直播源面板（按 L 呼出） -->
+<div id="livePanel">
+  <div class="lp-box">
+    <div class="lp-head">
+      <span>直播源</span>
+      <span class="lp-esc">Esc 关闭</span>
+    </div>
+    <input id="liveInput" type="text" spellcheck="false"
+           placeholder="粘贴直播间链接，或 .flv / .m3u8 直链">
+    <div class="lp-foot">
+      <button id="liveGo">开始播放</button>
+      <span id="liveMsg"></span>
+    </div>
+    <div class="lp-tip">
+      支持抖音直播、B 站直播 / B 站视频，或 .mp4 / .flv / .m3u8 直链
+    </div>
+  </div>
+</div>
+
+<!-- 轮换文档模板（不渲染，供 JS 切换使用） -->
+<template id="doc-tpl-1">
+<p>本文整理数据库备份的选型、执行与恢复流程，重点是"恢复"而不是"备份"。多数事故不是因为没备份，而是因为需要恢复时才发现备份不可用、或者不知道恢复到哪个时间点。</p>
+
+      <p>文中命令以 MySQL / PostgreSQL 为例，其他数据库思路一致。生产环境的恢复操作必须在隔离环境先演练，确认无误后再动线上。</p>
+
+      <h2 id="s1">1 适用范围与前提</h2>
+
+      <h3>1.1 适用对象</h3>
+
+      <ul>
+        <li>关系型数据库：MySQL 5.7+ / 8.0、PostgreSQL 12+</li>
+        <li>部署形态：单机、主从、云托管实例（托管实例至少要做逻辑导出，不能只依赖厂商快照）</li>
+        <li>数据量：单库 500GB 以内可以走逻辑备份；再大要考虑物理备份或快照</li>
+      </ul>
+
+      <h3>1.2 前提条件</h3>
+
+      <ul>
+        <li>备份账号具备 <code>SELECT</code>、<code>RELOAD</code>、<code>LOCK TABLES</code>（MySQL）或 <code>REPLICATION</code> 权限</li>
+        <li>备份目录所在磁盘剩余空间不少于数据量的 3 倍</li>
+        <li>已开启 binlog / WAL 归档，且保留期覆盖最长恢复需求</li>
+      </ul>
+
+      <blockquote>没有验证过恢复的备份，只能算"有文件"，不能算"有备份"。这句话听着像口号，但每年都有团队栽在上面。</blockquote>
+
+      <h2 id="s2">2 备份类型与选型</h2>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>速度</th>
+            <th>恢复粒度</th>
+            <th>适用场景</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>逻辑全量（dump）</td>
+            <td>慢</td>
+            <td>库 / 表</td>
+            <td>中小库、跨版本迁移</td>
+          </tr>
+          <tr>
+            <td>物理全量（xtrabackup）</td>
+            <td>快</td>
+            <td>实例</td>
+            <td>大库、快速恢复</td>
+          </tr>
+          <tr>
+            <td>binlog / WAL</td>
+            <td>实时</td>
+            <td>时间点</td>
+            <td>误删恢复、主从同步</td>
+          </tr>
+          <tr>
+            <td>存储快照</td>
+            <td>极快</td>
+            <td>整盘</td>
+            <td>云环境、大版本变更前</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>实际部署通常是组合使用：每日全量 + 实时 binlog，恢复时先还原最近一次全量，再重放 binlog 到目标时间点。</p>
+
+      <h2 id="s3">3 全量备份</h2>
+
+      <h3>3.1 MySQL 逻辑备份</h3>
+
+      <pre><code>mysqldump -u backup -p \
+  --single-transaction \
+  --quick \
+  --routines --triggers --events \
+  --set-gtid-purged=OFF \
+  --databases app_db \
+  | gzip &gt; /backup/mysql/app_db_$(date +%F_%H%M).sql.gz</code></pre>
+
+      <p>几个参数不能省：<code>--single-transaction</code> 保证 InnoDB 表的一致性快照且不锁表；<code>--quick</code> 避免把大表一次性读进内存；<code>--routines --triggers --events</code> 否则存储过程、触发器会丢。</p>
+
+      <p><code>--set-gtid-purged=OFF</code> 是为了让导出的文件能在另一个实例上直接导入。如果要用于搭建从库，则应保留 GTID 信息。</p>
+
+      <h3>3.2 PostgreSQL 逻辑备份</h3>
+
+      <pre><code>pg_dump -U backup -Fc -Z 6 -f /backup/pg/app_db_$(date +%F).dump app_db</code></pre>
+
+      <p><code>-Fc</code> 输出自定义格式，支持并行恢复与选择性还原；<code>-Z 6</code> 压缩级别。纯 SQL 文本格式（<code>-Fp</code>）便于人工查看，但恢复慢、不支持并行。</p>
+
+      <h2 id="s4">4 增量：binlog 与 WAL</h2>
+
+      <p>全量备份只能恢复到备份那一刻。要恢复到"误删之前 1 分钟"，必须依赖日志。</p>
+
+      <pre><code># 确认 binlog 已开启
+SHOW VARIABLES LIKE 'log_bin';
+SHOW VARIABLES LIKE 'binlog_format';   # 应为 ROW
+
+# 查看当前写入位置
+SHOW MASTER STATUS;</code></pre>
+
+      <p><code>binlog_format</code> 必须是 <code>ROW</code>。用 <code>STATEMENT</code> 格式时，某些函数（如 <code>NOW()</code>、<code>UUID()</code>）会导致主从不一致，恢复重放也可能出错。</p>
+
+      <p>日志保留时长由 <code>binlog_expire_logs_seconds</code> 控制，默认 30 天。如果业务要求能回溯更久，要么调大，要么定期归档到对象存储。</p>
+
+      <h2 id="s5">5 存储与保留</h2>
+
+      <p>遵循 3-2-1：三份副本、两种介质、一份异地。落地时至少保证一份不在同一台物理机上、不在同一个可用区。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>备份对象</th>
+            <th>频率</th>
+            <th>保留</th>
+            <th>存放位置</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>全量逻辑备份</td>
+            <td>每日 02:00</td>
+            <td>30 天</td>
+            <td>本地 + 异地对象存储</td>
+          </tr>
+          <tr>
+            <td>binlog</td>
+            <td>实时</td>
+            <td>14 天</td>
+            <td>本地磁盘</td>
+          </tr>
+          <tr>
+            <td>周度归档</td>
+            <td>每周日</td>
+            <td>6 个月</td>
+            <td>异地对象存储</td>
+          </tr>
+          <tr>
+            <td>变更前快照</td>
+            <td>按需</td>
+            <td>变更后 7 天</td>
+            <td>云盘快照</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>注意"保留 30 天"不等于"能恢复 30 天前"。如果有备份失败未告警，中间某天缺失，恢复链就断了。所以必须有备份成功率的监控。</p>
+
+      <h2 id="s6">6 备份有效性验证</h2>
+
+      <p>验证分三层，从浅到深，建议每月至少做到第二层。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>层级</th>
+            <th>做法</th>
+            <th>能发现的问题</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>文件级</td>
+            <td>检查文件大小、gzip 完整性</td>
+            <td>文件截断、空文件</td>
+          </tr>
+          <tr>
+            <td>可导入</td>
+            <td>导入测试库，统计表数量与行数</td>
+            <td>语法不兼容、权限缺失、字符集错乱</td>
+          </tr>
+          <tr>
+            <td>可恢复</td>
+            <td>走完整恢复流程，业务方抽查数据</td>
+            <td>丢失索引、触发器、外键、序列值</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <pre><code># 快速检查 gzip 完整性
+gzip -t /backup/mysql/app_db_2026-11-13_0200.sql.gz &amp;&amp; echo OK
+
+# 统计备份内的表数量（MySQL 逻辑备份）
+zcat app_db_2026-11-13_0200.sql.gz | grep -c 'CREATE TABLE'</code></pre>
+
+      <h2 id="s7">7 恢复流程</h2>
+
+      <h3>7.1 误删单表</h3>
+
+      <p>不要直接在生产库上操作。先恢复到临时实例，再从临时实例导出目标表覆盖回生产。</p>
+
+      <pre><code># 1. 解出全量备份到临时实例
+gunzip -c app_db_2026-11-13.sql.gz | mysql -h temp-host -u root -p
+
+# 2. 重放 binlog 到误删前的时间点
+mysqlbinlog --stop-datetime="2026-11-14 09:41:00" \
+  /var/lib/mysql/mysql-bin.000123 \
+  | mysql -h temp-host -u root -p
+
+# 3. 单表导出并回写
+mysqldump -h temp-host -u root -p app_db orders &gt; orders_fix.sql
+mysql -u root -p app_db &lt; orders_fix.sql</code></pre>
+
+      <h3>7.2 整库误删</h3>
+
+      <p>先确认没有写入正在进行（停应用或切只读），否则恢复过程中产生的新数据会与备份冲突。恢复完成后再放开写入，并核对自增 ID 与序列是否连续。</p>
+
+      <h3>7.3 恢复到指定时间点</h3>
+
+      <p>关键在 <code>--stop-datetime</code> 的取值。判断依据是业务侧提供的最后一条正常数据的时间戳，而不是"你觉得大概什么时候删的"。宁可选晚一点、丢掉少量数据，也不要选早（会丢更多）。</p>
+
+      <blockquote>恢复前把当前库整体再备份一份，哪怕它已经是坏的。恢复过程中如果判断失误，这份"坏备份"是唯一能回到起点的东西。</blockquote>
+
+      <h2 id="s8">8 常见问题</h2>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>现象</th>
+            <th>原因</th>
+            <th>处理</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>导入报字符集错误</td>
+            <td>导出与导入端默认字符集不一致</td>
+            <td>显式指定 <code>--default-character-set=utf8mb4</code></td>
+          </tr>
+          <tr>
+            <td>恢复后自增 ID 冲突</td>
+            <td>未恢复 <code>AUTO_INCREMENT</code> 值</td>
+            <td>导入后 <code>ALTER TABLE ... AUTO_INCREMENT=</code></td>
+          </tr>
+          <tr>
+            <td>备份文件明显偏小</td>
+            <td>dump 中断但管道未报错</td>
+            <td>检查 <code>PIPESTATUS</code>，不要只看最后一行</td>
+          </tr>
+          <tr>
+            <td>binlog 重放报 duplicate entry</td>
+            <td>全量备份点与 binlog 起点不匹配</td>
+            <td>核对 <code>SHOW MASTER STATUS</code> 记录的位点</td>
+          </tr>
+          <tr>
+            <td>恢复极慢</td>
+            <td>逐条 INSERT、未关自动提交</td>
+            <td>导入时 <code>SET autocommit=0</code> 并分批 commit</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="s9">9 变更与文档维护</h2>
+
+      <p>本文档随实际演练结果更新。每次做恢复演练后，把遇到的问题补进"常见问题"表；每次调整备份策略，同步更新第 5 节的保留表。</p>
+
+      <p>建议每季度完整走一次恢复演练，选一台与生产同版本的干净机器，从零开始恢复，记录耗时。这个耗时是事故时的预期恢复时间，比任何承诺都可靠。</p>
+</template>
+
+<template id="doc-tpl-2">
+<p>网络变更的风险不在"改什么"，而在"改完之后影响了谁"。一条看起来只影响某个 VLAN 的 ACL，可能让整栋楼的打印机连不上。本文把变更拆成可检查的步骤，目的是让每一次改动都可以回退、可以复盘。</p>
+
+      <p>适用于交换机、路由器、防火墙的配置变更。云上安全组与路由表的调整同样参考本文流程。</p>
+
+      <h2 id="s1">1 目的与适用范围</h2>
+
+      <p>规范网络设备变更的申请、审批、实施与验证流程，降低因配置错误导致的业务中断，保证每次变更都有据可查、有路可退。</p>
+
+      <ul>
+        <li>覆盖设备：核心交换机、接入交换机、出口路由器、硬件防火墙</li>
+        <li>覆盖操作：VLAN 调整、ACL 变更、路由策略、端口配置、固件升级</li>
+        <li>不覆盖：新设备上线（走独立的项目流程）、纯监控采样配置</li>
+      </ul>
+
+      <h2 id="s2">2 变更分级</h2>
+
+      <p>分级决定审批人与实施时间窗口。定级的核心是"最坏情况下影响多少人"，不是"改几行命令"。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>级别</th>
+            <th>判定标准</th>
+            <th>审批</th>
+            <th>时间窗口</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A 级（重大）</td>
+            <td>影响核心链路、出口、跨机房互通</td>
+            <td>网络负责人 + 业务负责人</td>
+            <td>夜间 22:00 后</td>
+          </tr>
+          <tr>
+            <td>B 级（常规）</td>
+            <td>影响单个楼层或单个业务系统</td>
+            <td>网络负责人</td>
+            <td>业务低峰期</td>
+          </tr>
+          <tr>
+            <td>C 级（轻微）</td>
+            <td>不影响转发，如描述、备注、监控采样</td>
+            <td>组长</td>
+            <td>工作时间内</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>定级有争议时，按高一级处理。把 A 级当 B 级做，代价通常是通宵。</p>
+
+      <h2 id="s3">3 变更申请要素</h2>
+
+      <p>一份可以执行的变更单至少包含六项，缺任何一项都应该退回补充。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>要素</th>
+            <th>要求</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>变更内容</td>
+            <td>具体配置差异，以"改前 / 改后"两段配置呈现</td>
+          </tr>
+          <tr>
+            <td>影响范围</td>
+            <td>涉及哪台设备、哪些网段、哪些业务系统</td>
+          </tr>
+          <tr>
+            <td>实施时间</td>
+            <td>起止时间，含验证时间</td>
+          </tr>
+          <tr>
+            <td>回滚方案</td>
+            <td>具体命令，不是"恢复原配置"这种话</td>
+          </tr>
+          <tr>
+            <td>验证方法</td>
+            <td>从哪台机器、用什么命令、看到什么算成功</td>
+          </tr>
+          <tr>
+            <td>失败预案</td>
+            <td>回滚后仍不通时的升级路径与联系人</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <blockquote>"回滚方案：恢复原配置"——这句话等于没有回滚方案。真出事的时候，没人能在三分钟内凭记忆还原几十行配置。</blockquote>
+
+      <h2 id="s4">4 变更前准备</h2>
+
+      <h3>4.1 配置备份</h3>
+
+      <pre><code># H3C / 华为
+display current-configuration &gt; startup.cfg.bak
+# Cisco
+show running-config | tee /tftp/cfg-$(date +%F).txt
+
+# 自动备份（以 telnet/ssh + expect 为例，示意）
+ssh admin@10.0.0.1 "show running-config" &gt; /backup/sw-core-$(date +%F_%H%M).cfg</code></pre>
+
+      <p>备份必须落到**另一台机器**上。存在设备内部的备份，在设备起不来的时候等于没有。</p>
+
+      <h3>4.2 检查清单</h3>
+
+      <ul>
+        <li>确认当前无其他人在同一设备上操作</li>
+        <li>确认带外管理通道可用（Console 或独立管理网）</li>
+        <li>确认备用链路或冗余设备处于正常状态</li>
+        <li>确认实施期间无人做关联变更</li>
+        <li>确认回滚命令已经过验证（至少在一台同型号设备上试过）</li>
+      </ul>
+
+      <h2 id="s5">5 实施步骤</h2>
+
+      <p>以交换机 ACL 变更为例。原则是：一次只改一个维度，改完立刻验证，不要连续下十条命令再一起看结果。</p>
+
+      <pre><code># 1. 进入配置模式
+system-view
+
+# 2. 先看现有 ACL，确认编号未被占用
+display acl 3001
+
+# 3. 修改时尽量用"追加 + 最后拒绝"，而不是插到中间
+acl number 3001
+ rule 100 permit tcp source 10.10.20.0 0.0.0.255 destination 10.10.30.10 0
+ rule 900 deny ip
+
+# 4. 每次改动后立刻保存
+save force</code></pre>
+
+      <p>为什么不建议在已有规则中间插入新规则：多数设备按顺序匹配，插入会导致后续序号整体偏移，原有规则的实际生效顺序变了，而配置文件里看起来"只是多了一条"。</p>
+
+      <h3>5.1 涉及远程操作时的自保</h3>
+
+      <pre><code># 先设置一个自动回滚定时器，10 分钟不确认就还原
+# 各厂商命令不同，思路一致
+schedule reboot at 23:50    # 兜底：到点重启回默认配置（谨慎使用）
+# 或使用 commit-confirmed（Juniper / 部分华为）
+commit confirmed 10</code></pre>
+
+      <p>如果设备支持"确认式提交"，一定用它。改错了没确认，设备会自动回滚，这是唯一能救回远程失联的手段。</p>
+
+      <h2 id="s6">6 回滚方案</h2>
+
+      <p>回滚要写成可以直接粘贴的命令序列，而不是描述。</p>
+
+      <pre><code># 回滚：删除本次新增的规则
+system-view
+acl number 3001
+ undo rule 100
+ quit
+save force
+
+# 或整段恢复备份（注意会覆盖其他变更）
+tftp 10.0.0.200 get cfg-2026-11-14_2130.cfg startup.cfg
+reboot</code></pre>
+
+      <p>整段恢复的风险是会把别人在备份之后做的变更一起冲掉。所以回滚优先用"逐条 undo"，整段恢复只在设备配置已完全混乱时使用。</p>
+
+      <h2 id="s7">7 变更后验证</h2>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>验证项</th>
+            <th>方法</th>
+            <th>通过标准</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>配置生效</td>
+            <td>display current-configuration 对比</td>
+            <td>与变更单一致</td>
+          </tr>
+          <tr>
+            <td>连通性</td>
+            <td>从业务网段 ping / telnet 目标</td>
+            <td>与变更前一致</td>
+          </tr>
+          <tr>
+            <td>路由表</td>
+            <td>display ip routing-table</td>
+            <td>无意外路由消失</td>
+          </tr>
+          <tr>
+            <td>端口状态</td>
+            <td>display interface brief</td>
+            <td>无端口意外 down</td>
+          </tr>
+          <tr>
+            <td>业务验证</td>
+            <td>业务方实际访问</td>
+            <td>业务方书面确认</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>最后一项不能省。技术上通不代表业务上通，反过来也成立。让业务方点一下，比看一百行 show 命令有用。</p>
+
+      <h2 id="s8">8 记录与归档</h2>
+
+      <p>变更单在实施完成后 24 小时内归档，附上：改前配置、改后配置、验证截图、实际耗时。如果中途有偏差（比如原计划改 3 条实际改了 5 条），在备注里写清楚原因。</p>
+
+      <p>归档不是为了应付检查。半年后同一台设备再出问题，这些记录是唯一能还原"当时为什么这么配"的材料。</p>
+
+      <h2 id="s9">9 常见事故与复盘要点</h2>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>事故类型</th>
+            <th>典型原因</th>
+            <th>复盘该问什么</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>远程失联</td>
+            <td>改管理网 ACL 未保留自身来源</td>
+            <td>为什么没用确认式提交</td>
+          </tr>
+          <tr>
+            <td>业务中断</td>
+            <td>ACL 顺序导致默认拒绝提前命中</td>
+            <td>变更前有没有在测试设备验证</td>
+          </tr>
+          <tr>
+            <td>环路</td>
+            <td>STP 未开启或优先级配置错误</td>
+            <td>接入层是否统一了 STP 策略</td>
+          </tr>
+          <tr>
+            <td>回滚失败</td>
+            <td>备份文件不完整或缺依赖</td>
+            <td>备份是否在另一台机器上、是否验证过</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>复盘要追问流程，而不是追问人。"谁改的"没有价值，"为什么这个环节没拦住"才有。</p>
+</template>
+
+<script src="libs/flv.min.js"></script>
+<script src="libs/hls.min.js"></script>
+
+<script>
+(function () {
+  'use strict';
+
+  var root   = document.documentElement;
+  var rail   = document.getElementById('adRail');
+  var railRefresh = document.getElementById('railRefresh');
+  var stage  = document.getElementById('adStage');
+  var vid    = document.getElementById('vid');
+  var empty  = document.getElementById('adEmpty');
+  var seek   = document.getElementById('seek');
+  var clock  = document.getElementById('clock');
+  var btnPlay = document.getElementById('btnPlay');
+  var btnMute = document.getElementById('btnMute');
+  var adClose = document.getElementById('adClose');
+  var dropHint = document.getElementById('dropHint');
+  var toastEl = document.getElementById('toast');
+
+  var livePanel = document.getElementById('livePanel');
+  var liveInput = document.getElementById('liveInput');
+  var liveGo = document.getElementById('liveGo');
+  var liveMsg = document.getElementById('liveMsg');
+
+  var flvPlayer = null;
+  var hlsPlayer = null;
+  var liveMode = false;
+  var liveReferer = '';
+
+  var slots = Array.prototype.slice.call(rail.querySelectorAll('.ad-slot'));
+
+  var BASE_W = 280;
+  var railScale = 1;
+  var bigMode = false;
+  var savedScale = 1;
+  var objectUrl = null;
+  var seeking = false;
+  var closed = false;
+  var masked = false;
+  var curSlot = 0;
+
+  var autoHide = true;        // 离开页面 → 广告栏隐藏（但播放不停）
+  var ready = false;          // 加载后宽限期，避免一打开就被判为"离开"
+
+  /* ---------- 轻提示 ---------- */
+  var toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('on'); }, 1300);
+  }
+
+  /* ---------- 离开页面：只隐藏，不暂停 ---------- */
+  function applyAway() {
+    if (!ready || !autoHide) return;
+
+    var away = document.hidden || !document.hasFocus();
+    var isAway = rail.classList.contains('away');
+
+    if (away && !isAway) {
+      // 只把广告栏藏起来。播放继续、进度继续、声音继续，回来直接接上
+      rail.classList.add('away');
+    } else if (!away && isAway) {
+      rail.classList.remove('away');
+    }
+  }
+
+  document.addEventListener('visibilitychange', applyAway);
+  window.addEventListener('blur', applyAway);
+  window.addEventListener('focus', applyAway);
+
+  // 宽限期结束后才开始响应
+  setTimeout(function () { ready = true; }, 1200);
+
+  /* ---------- 尺寸 ---------- */
+  function applyScale() {
+    root.style.setProperty('--rail-scale', railScale);
+  }
+
+  /* ---------- 换位：视频在三个广告位之间搬 ---------- */
+  function moveTo(idx) {
+    if (!slots.length) return;
+    curSlot = ((idx % slots.length) + slots.length) % slots.length;
+    slots[curSlot].appendChild(stage);
+    if (bigMode) showOnlyVideoSlot(true);
+  }
+
+  railRefresh.addEventListener('click', function () {
+    moveTo(curSlot + 1);
+  });
+
+  /* ---------- 直播流 ---------- */
+  function destroyPlayers() {
+    if (flvPlayer) {
+      try {
+        flvPlayer.pause();
+        flvPlayer.unload();
+        flvPlayer.detachMediaElement();
+        flvPlayer.destroy();
+      } catch (e) { /* 忽略 */ }
+      flvPlayer = null;
+    }
+    if (hlsPlayer) {
+      try { hlsPlayer.destroy(); } catch (e) { /* 忽略 */ }
+      hlsPlayer = null;
+    }
+    liveMode = false;
+  }
+
+  function playLive(rawUrl) {
+    destroyPlayers();
+
+    var proxied = '/proxy?u=' + encodeURIComponent(rawUrl);
+    if (liveReferer) proxied += '&r=' + encodeURIComponent(liveReferer);
+    var lower = rawUrl.toLowerCase();
+    var isFlv = lower.indexOf('.flv') > -1;
+    var isHls = lower.indexOf('.m3u8') > -1;
+
+    closed = false;
+    empty.classList.add('hide');
+    vid.removeAttribute('src');
+    vid.load();
+
+    if (isFlv && window.flvjs && window.flvjs.isSupported()) {
+      liveMode = true;
+      flvPlayer = window.flvjs.createPlayer({
+        type: 'flv',
+        url: proxied,
+        isLive: true,
+        hasAudio: true
+      }, {
+        enableStashBuffer: false,
+        stashInitialSize: 128,
+        lazyLoad: false,
+        autoCleanupSourceBuffer: true
+      });
+      flvPlayer.attachMediaElement(vid);
+      flvPlayer.on(window.flvjs.Events.ERROR, function (t, d) {
+        console.warn('[flv]', t, d);
+        toast('直播流中断');
+      });
+      flvPlayer.load();
+      vid.play().catch(function () {});
+      toast('直播已接入');
+    } else if (isHls && window.Hls && window.Hls.isSupported()) {
+      liveMode = true;
+      hlsPlayer = new window.Hls({ lowLatencyMode: true, liveSyncDurationCount: 3 });
+      hlsPlayer.loadSource(proxied);
+      hlsPlayer.attachMedia(vid);
+      hlsPlayer.on(window.Hls.Events.ERROR, function (_, d) {
+        if (d && d.fatal) toast('直播流中断');
+      });
+      vid.play().catch(function () {});
+      toast('直播已接入');
+    } else {
+      // 兜底：当普通直链处理
+      vid.src = proxied;
+      vid.play().catch(function () {});
+      toast('已开始播放');
+    }
+  }
+
+  function setLiveMsg(msg, cls) {
+    liveMsg.textContent = msg || '';
+    liveMsg.className = cls || '';
+  }
+
+  function openLivePanel() {
+    livePanel.classList.add('on');
+    setLiveMsg('');
+    setTimeout(function () { liveInput.focus(); liveInput.select(); }, 30);
+  }
+
+  function closeLivePanel() {
+    livePanel.classList.remove('on');
+  }
+
+  async function startLive() {
+    var raw = (liveInput.value || '').trim();
+    if (!raw) { setLiveMsg('先填个地址', 'err'); return; }
+
+    if (location.protocol === 'file:') {
+      setLiveMsg('要用 http 打开才行 —— 改成双击「启动伪装播放器.bat」', 'err');
+      return;
+    }
+
+    liveGo.disabled = true;
+    try {
+      if (/\.flv(\?|$)/i.test(raw) || /\.m3u8(\?|$)/i.test(raw) || /\.mp4(\?|$)/i.test(raw)) {
+        setLiveMsg('直链，正在连接…');
+        liveReferer = '';
+        playLive(raw);
+        try { localStorage.setItem('wbLiveRoom', raw); } catch (e) {}
+      } else if (/douyin\.com|bilibili\.com|b23\.tv/i.test(raw)) {
+        setLiveMsg('正在取流…');
+        var resp = await fetch('/resolve?u=' + encodeURIComponent(raw));
+        var data = await resp.json();
+        if (!data.ok) throw new Error(data.error || '取流失败');
+        liveReferer = data.referer || '';
+        var src = (data.direct && data.direct[0]) || (data.flv && data.flv[0]) || (data.m3u8 && data.m3u8[0]);
+        if (!src) throw new Error('没拿到可用的播放地址');
+        setLiveMsg('已取到流，正在连接…', 'ok');
+        playLive(src);
+        try { localStorage.setItem('wbLiveRoom', raw); } catch (e) {}
+      } else {
+        liveReferer = '';
+        playLive(raw);
+      }
+      setTimeout(closeLivePanel, 400);
+    } catch (e) {
+      setLiveMsg(e.message || '出错了', 'err');
+    } finally {
+      liveGo.disabled = false;
+    }
+  }
+
+  /* 直播流地址会过期，按 R 重新取一次 */
+  async function refreshLive() {
+    if (location.protocol === 'file:') { toast('要先启动本地服务'); return; }
+
+    var room = '';
+    try { room = localStorage.getItem('wbLiveRoom') || ''; } catch (e) {}
+
+    if (!room) { toast('还没有记录直播间'); return; }
+
+    toast('正在刷新直播流…');
+    try {
+      if (/\.flv(\?|$)/i.test(room) || /\.m3u8(\?|$)/i.test(room) || /\.mp4(\?|$)/i.test(room)) {
+        liveReferer = '';
+        playLive(room);
+        return;
+      }
+      var resp = await fetch('/resolve?u=' + encodeURIComponent(room));
+      var data = await resp.json();
+      if (!data.ok) throw new Error(data.error || '取流失败');
+      liveReferer = data.referer || '';
+      var src = (data.direct && data.direct[0]) || (data.flv && data.flv[0]) || (data.m3u8 && data.m3u8[0]);
+      if (!src) throw new Error('没拿到可用地址');
+      playLive(src);
+    } catch (e) {
+      toast('刷新失败：' + (e.message || '未知错误'));
+    }
+  }
+
+  liveGo.addEventListener('click', startLive);
+  liveInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') startLive();
+    if (e.key === 'Escape') closeLivePanel();
+  });
+  livePanel.addEventListener('click', function (e) {
+    if (e.target === livePanel) closeLivePanel();
+  });
+
+  /* ---------- 载入视频 ---------- */
+  function loadFile(file) {
+    if (!file) return;
+    destroyPlayers();
+    if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; }
+    objectUrl = URL.createObjectURL(file);
+    vid.src = objectUrl;
+    closed = false;
+    empty.classList.add('hide');
+    vid.play().catch(function () { /* 自动播放被拦，等用户点 */ });
+  }
+
+  function loadUrl(url) {
+    if (!url) return;
+    // 拖进来的是直播流直链，走直播通道
+    if (location.protocol !== 'file:' &&
+        (/\.flv(\?|$)/i.test(url) || /\.m3u8(\?|$)/i.test(url))) {
+      playLive(url);
+      return;
+    }
+    destroyPlayers();
+    vid.src = url;
+    closed = false;
+    empty.classList.add('hide');
+    vid.play().catch(function () {});
+  }
+
+  function openPicker() {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'video/*';
+    input.onchange = function () { loadFile(input.files[0]); };
+    input.click();
+  }
+
+  /* ---------- 拖放 ---------- */
+  var dragDepth = 0;
+
+  document.addEventListener('dragenter', function (e) {
+    e.preventDefault();
+    dragDepth++;
+    dropHint.classList.add('on');
+  });
+
+  document.addEventListener('dragover', function (e) {
+    e.preventDefault();
+  });
+
+  document.addEventListener('dragleave', function (e) {
+    e.preventDefault();
+    dragDepth--;
+    if (dragDepth <= 0) { dragDepth = 0; dropHint.classList.remove('on'); }
+  });
+
+  document.addEventListener('drop', function (e) {
+    e.preventDefault();
+    dragDepth = 0;
+    dropHint.classList.remove('on');
+
+    var dt = e.dataTransfer;
+    if (!dt) return;
+
+    if (dt.files && dt.files.length) {
+      loadFile(dt.files[0]);
+      return;
+    }
+    var url = dt.getData('text/uri-list') || dt.getData('text/plain');
+    if (url) loadUrl(url.trim());
+  });
+
+  /* ---------- 播放控制 ---------- */
+  function togglePlay() {
+    if (!vid.src && !flvPlayer && !hlsPlayer) { openLivePanel(); return; }
+    if (flvPlayer) {
+      if (vid.paused) flvPlayer.play();
+      else flvPlayer.pause();
+      return;
+    }
+    if (vid.paused) { vid.play().catch(function () {}); }
+    else { vid.pause(); }
+  }
+
+  vid.addEventListener('play',  function () { btnPlay.textContent = '❚❚'; });
+  vid.addEventListener('pause', function () { btnPlay.textContent = '▶'; });
+
+  vid.addEventListener('timeupdate', function () {
+    if (liveMode || !isFinite(vid.duration)) {
+      clock.textContent = '直播';
+      seek.value = 0;
+      return;
+    }
+    if (!seeking && vid.duration) {
+      seek.value = Math.round(vid.currentTime / vid.duration * 1000);
+    }
+    clock.textContent = fmt(vid.currentTime) + ' / ' + fmt(vid.duration || 0);
+  });
+
+  vid.addEventListener('click', togglePlay);
+  vid.addEventListener('dblclick', function (e) { e.preventDefault(); toggleBig(); });
+  vid.addEventListener('ended', function () { btnPlay.textContent = '▶'; });
+
+  seek.addEventListener('mousedown', function () { seeking = true; });
+  seek.addEventListener('input', function () {
+    if (vid.duration) vid.currentTime = seek.value / 1000 * vid.duration;
+  });
+  seek.addEventListener('change', function () { seeking = false; });
+
+  btnPlay.addEventListener('click', function (e) { e.stopPropagation(); togglePlay(); });
+
+  btnMute.addEventListener('click', function (e) {
+    e.stopPropagation();
+    vid.muted = !vid.muted;
+    btnMute.textContent = vid.muted ? '🔇' : '🔊';
+  });
+
+  function fmt(s) {
+    if (!s || !isFinite(s)) return '0:00';
+    s = Math.floor(s);
+    var m = Math.floor(s / 60);
+    var r = s % 60;
+    return m + ':' + (r < 10 ? '0' : '') + r;
+  }
+
+  /* ---------- 假关闭：只是变灰块 ---------- */
+  adClose.addEventListener('click', function (e) {
+    e.stopPropagation();
+    closed = true;
+    vid.pause();
+    empty.classList.remove('hide');
+    empty.innerHTML = '广告已关闭<div class="hint">点这里恢复</div>';
+    empty.style.cursor = 'pointer';
+  });
+
+  empty.addEventListener('click', function () {
+    if (!closed) {
+      if (!vid.src && !flvPlayer && !hlsPlayer) openLivePanel();
+      return;
+    }
+    closed = false;
+    empty.style.cursor = '';
+    if (vid.src) {
+      empty.classList.add('hide');
+      vid.play().catch(function () {});
+    } else {
+      empty.innerHTML = '拖入视频 · 或按 L 接入直播<div class="hint">本地文件 / flv / m3u8 均可</div>';
+    }
+  });
+
+  /* ---------- 临时放大看清 / 复位 ---------- */
+  function showOnlyVideoSlot(only) {
+    slots.forEach(function (s, i) {
+      s.style.display = (only && i !== curSlot) ? 'none' : '';
+    });
+  }
+
+  function toggleBig() {
+    bigMode = !bigMode;
+    if (bigMode) {
+      // 只留视频那一格，放大到看清
+      savedScale = railScale;
+      railScale = 1.9;
+      showOnlyVideoSlot(true);
+    } else {
+      railScale = savedScale || 1;
+      showOnlyVideoSlot(false);
+    }
+    applyScale();
+  }
+
+  /* ---------- 快捷键 ---------- */
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+    switch (e.key) {
+      case 'Tab':                       // 视频换到下一个广告位
+        e.preventDefault();
+        moveTo(curSlot + (e.shiftKey ? -1 : 1));
+        break;
+      case ']':
+        railScale = Math.min(1.3, +(railScale + 0.08).toFixed(2));
+        applyScale();
+        break;
+      case '[':
+        railScale = Math.max(0.45, +(railScale - 0.08).toFixed(2));
+        applyScale();
+        break;
+      case '\\':
+        railScale = 1;
+        if (bigMode) { bigMode = false; showOnlyVideoSlot(false); }
+        applyScale();
+        break;
+      case 'f':
+      case 'F':
+        toggleBig();
+        break;
+      case 'h':
+      case 'H':
+        rail.classList.toggle('hidden');
+        toast(rail.classList.contains('hidden') ? '已隐藏' : '已显示');
+        break;
+      case 'a':
+      case 'A':
+        autoHide = !autoHide;
+        if (!autoHide) rail.classList.remove('away');
+        else applyAway();
+        toast('离开即隐藏：' + (autoHide ? '开' : '关'));
+        break;
+      case 'i':                         // 隐蔽滤镜：压暗压灰，像静态插图
+      case 'I':
+        masked = !masked;
+        vid.classList.toggle('mask', masked);
+        break;
+      case 'o':
+      case 'O':
+        openPicker();
+        break;
+      case 'l':
+      case 'L':
+        openLivePanel();
+        break;
+      case 'r':
+      case 'R':
+        refreshLive();
+        break;
+      case 'n':
+      case 'N':
+        nextDoc();
+        break;
+      case 'm':
+      case 'M':
+        vid.muted = !vid.muted;
+        btnMute.textContent = vid.muted ? '🔇' : '🔊';
+        break;
+      case ' ':
+        e.preventDefault();
+        togglePlay();
+        break;
+    }
+  });
+
+  /* ---------- 正文轮换 ---------- */
+  var DOCS = [
+    {
+      title: '服务器日常巡检与故障处理手册',
+      sub: '覆盖系统层与服务层的日常巡检项、判读阈值与常见故障处置流程，适用于自建机房与云上独立部署。',
+      meta: '<span>文档编号 <b>OPS-MAN-014</b></span><span>版本 <b>v3.4</b></span><span>更新 2026-11-12</span><span>维护 <b>基础设施组</b></span>',
+      tpl: null
+    },
+    {
+      title: '数据库备份与恢复操作指南',
+      sub: '备份选型、执行与恢复流程，重点在"能不能恢复"，而不是"有没有备份"。',
+      meta: '<span>文档编号 <b>OPS-DB-007</b></span><span>版本 <b>v2.6</b></span><span>更新 2026-10-28</span><span>维护 <b>数据库组</b></span>',
+      tpl: 'doc-tpl-1'
+    },
+    {
+      title: '网络设备配置变更流程',
+      sub: '规范网络设备变更的申请、审批、实施与验证，保证每次改动有据可查、有路可退。',
+      meta: '<span>文档编号 <b>OPS-NET-021</b></span><span>版本 <b>v1.9</b></span><span>更新 2026-11-05</span><span>维护 <b>网络组</b></span>',
+      tpl: 'doc-tpl-2'
+    }
+  ];
+
+  var docTitleEl = document.getElementById('docTitle');
+  var docSubEl = document.getElementById('docSub');
+  var docMetaEl = document.getElementById('docMeta');
+  var docBodyEl = document.getElementById('docBody');
+  var docTocEl = document.getElementById('docToc');
+
+  var firstBodyHtml = docBodyEl ? docBodyEl.innerHTML : '';
+  var curDoc = 0;
+
+  function renderDoc(i) {
+    if (!docBodyEl) return;
+    curDoc = ((i % DOCS.length) + DOCS.length) % DOCS.length;
+    var d = DOCS[curDoc];
+
+    docTitleEl.textContent = d.title;
+    docSubEl.textContent = d.sub;
+    docMetaEl.innerHTML = d.meta;
+
+    docBodyEl.innerHTML = d.tpl
+      ? document.getElementById(d.tpl).innerHTML
+      : firstBodyHtml;
+
+    // 目录跟着正文重建
+    docTocEl.innerHTML = '';
+    Array.prototype.forEach.call(docBodyEl.querySelectorAll('h2'), function (h) {
+      var li = document.createElement('li');
+      var a = document.createElement('a');
+      a.href = '#' + (h.id || '');
+      a.textContent = h.textContent;
+      li.appendChild(a);
+      docTocEl.appendChild(li);
+    });
+
+    window.scrollTo(0, 0);
+  }
+
+  var SWITCH_MS = 20 * 60 * 1000;
+  var lastDocSwitch = Date.now();
+
+  function nextDoc() {
+    lastDocSwitch = Date.now();
+    renderDoc(curDoc + 1);
+  }
+
+  setInterval(function () {
+    if (Date.now() - lastDocSwitch >= SWITCH_MS) nextDoc();
+  }, 20000);
+
+  /* ---------- 左侧广告轮播 ---------- */
+  function startAdRotation() {
+    var boxes = document.querySelectorAll('.l-ad');
+
+    Array.prototype.forEach.call(boxes, function (box, i) {
+      var faces = box.querySelectorAll('.la-face');
+      if (faces.length < 2) return;
+
+      var idx = 0;
+      var base = 6500 + i * 2300;   // 各广告位错开，不要同时切换
+
+      function tick() {
+        var wait = base + Math.random() * 4200;
+        setTimeout(function () {
+          faces[idx].classList.remove('active');
+          idx = (idx + 1) % faces.length;
+          faces[idx].classList.add('active');
+          tick();
+        }, wait);
+      }
+      tick();
+    });
+  }
+
+  /* ---------- 广告位的视频背景 ---------- */
+  async function mountAdVideos() {
+    if (location.protocol === 'file:') return;
+
+    var files = [];
+    try {
+      var resp = await fetch('/ads');
+      var data = await resp.json();
+      files = data.files || [];
+    } catch (e) {
+      return;
+    }
+    if (!files.length) return;
+
+    // 竖版优先给左栏
+    var vert = files.filter(function (f) { return /^ad_v_/i.test(f); });
+    var pool = vert.length ? vert : files;
+
+    var boxes = document.querySelectorAll('.l-ad');
+    Array.prototype.forEach.call(boxes, function (box, i) {
+      var name = pool[i % pool.length];
+
+      var v = document.createElement('video');
+      v.className = 'la-video';
+      v.src = '/ads/' + encodeURIComponent(name);
+      v.muted = true;
+      v.loop = true;
+      v.autoplay = true;
+      v.playsInline = true;
+      v.setAttribute('playsinline', '');
+      v.setAttribute('disablepictureinpicture', '');
+
+      v.addEventListener('error', function () {
+        v.remove();
+        box.classList.remove('has-video');
+      });
+
+      var tag = box.querySelector('.la-tag');
+      box.insertBefore(v, tag ? tag.nextSibling : box.firstChild);
+      box.classList.add('has-video');
+
+      var p = v.play();
+      if (p && p.catch) p.catch(function () {});
+    });
+  }
+
+  /* ---------- 初始 ---------- */
+  applyScale();
+  moveTo(0);
+  startAdRotation();
+  mountAdVideos();
+})();
+</script>
+</body>
+</html>
