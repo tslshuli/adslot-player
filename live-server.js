@@ -235,6 +235,30 @@ async function resolveBilibili(roomUrl) {
 
 /* --------------------------------------------- 网页正文提取 */
 
+/* 结构化提取失败时的兜底：按文本块切分，不依赖标签结构 */
+function textBlocksToHtml(html) {
+  let t = String(html)
+    .replace(/<(script|style|noscript)[\s\S]*?<\/\1>/gi, '')
+    .replace(/<\/(?:div|p|li|h[1-6]|tr|section|article|blockquote|td)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '');
+
+  t = t.replace(/&nbsp;/g, ' ')
+       .replace(/&amp;/g, '&')
+       .replace(/&lt;/g, '<')
+       .replace(/&gt;/g, '>')
+       .replace(/&quot;/g, '"')
+       .replace(/&#39;/g, "'");
+
+  const lines = t.split('\n')
+    .map((x) => x.replace(/\s+/g, ' ').trim())
+    .filter((x) => x.length >= 15);
+
+  if (lines.length < 3) return '';
+
+  return lines.map((x) => '<p>' + x + '</p>').join('\n');
+}
+
 function extractArticle(rawHtml) {
   let s = String(rawHtml);
 
@@ -281,6 +305,13 @@ function extractArticle(rawHtml) {
   if (!best) best = s;
   let body = best;
 
+  // 拿到正文区域之后，再把「段落型 div」还原成 <p>。
+  // 要求内部不含 div / section，否则非贪婪匹配会在第一个 </div> 截断，把结构搞乱。
+  body = body.replace(
+    /<(div|section)[^>]*class="[^"]*(?:bjh-p|rich_media_content|article-content|para|paragraph|text-p|content-text)[^"]*"[^>]*>((?:(?!<(?:div|section)\b)[\s\S])*?)<\/\1>/gi,
+    '<p>$2</p>'
+  );
+
   // 只保留这些标签，其余去掉但保留文字
   const ALLOW = new Set([
     'h1', 'h2', 'h3', 'h4', 'p', 'ul', 'ol', 'li', 'blockquote',
@@ -297,10 +328,14 @@ function extractArticle(rawHtml) {
   // 页面标题已经是 h1，正文里的 h1 降级
   body = body.replace(/<h1>/g, '<h2>').replace(/<\/h1>/g, '</h2>');
 
-  // 丢掉过短的列表项，多半是导航菜单
+  // 丢掉过短的列表项和段落，多半是导航菜单或零碎按钮文字
   body = body.replace(/<li>([\s\S]*?)<\/li>/g, (m, inner) => {
     const t = inner.replace(/<[^>]+>/g, '').trim();
     return t.length >= 10 ? m : '';
+  });
+  body = body.replace(/<p>([\s\S]*?)<\/p>/g, (m, inner) => {
+    const t = inner.replace(/<[^>]+>/g, '').trim();
+    return t.length >= 5 ? m : '';
   });
 
   // 清理空标签与连续空行
@@ -310,8 +345,10 @@ function extractArticle(rawHtml) {
              .replace(/\n{3,}/g, '\n\n')
              .trim();
 
-  // 段落太少说明没抓到正文，不要硬塞给用户
+  // 段落太少，说明结构化提取没成功，退回按文本块切分
   if ((body.match(/<p>/g) || []).length < 2) {
+    const fallback = textBlocksToHtml(s);
+    if (fallback) return { title, html: fallback };
     return { title, html: '' };
   }
 
