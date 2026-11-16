@@ -261,6 +261,7 @@ function textBlocksToHtml(html) {
 
 function extractArticle(rawHtml) {
   let s = String(rawHtml);
+  const dbg = { srcLen: s.length };
 
   let title = '';
   const tm = s.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -305,6 +306,10 @@ function extractArticle(rawHtml) {
   if (!best) best = s;
   let body = best;
 
+  dbg.bestScore = bestScore;
+  dbg.bestPLen = (best.match(/<p\b/gi) || []).length;
+  dbg.bestLen = best.length;
+
   // 拿到正文区域之后，再把「段落型 div」还原成 <p>。
   // 要求内部不含 div / section，否则非贪婪匹配会在第一个 </div> 截断，把结构搞乱。
   body = body.replace(
@@ -346,13 +351,18 @@ function extractArticle(rawHtml) {
              .trim();
 
   // 段落太少，说明结构化提取没成功，退回按文本块切分
-  if ((body.match(/<p>/g) || []).length < 2) {
+  const bodyP = (body.match(/<p>/g) || []).length;
+  dbg.bodyP = bodyP;
+  dbg.bodyLen = body.length;
+
+  if (bodyP < 2) {
     const fallback = textBlocksToHtml(s);
-    if (fallback) return { title, html: fallback };
-    return { title, html: '' };
+    dbg.fallbackLen = fallback.length;
+    if (fallback) return { title, html: fallback, debug: dbg };
+    return { title, html: '', debug: dbg };
   }
 
-  return { title, html: body };
+  return { title, html: body, debug: dbg };
 }
 
 /* --------------------------------------------- B 站普通视频（点播） */
@@ -555,9 +565,23 @@ const server = http.createServer(async (req, res) => {
     try {
       const r = await get(target);
       if (r.status !== 200) throw new Error('目标页面返回 HTTP ' + r.status);
+
+      // 百度系常见：被风控后 302 到安全验证页，页面本身还能返回 200，但内容没用
+      if (/wappass\.baidu\.com|\/captcha\//i.test(r.url || '') || /百度安全验证/.test(r.body)) {
+        throw new Error('被百度的安全验证拦了，等十几分钟再试，或者换个来源');
+      }
       const a = extractArticle(r.body);
       if (!a.html) {
-        throw new Error('这个页面没找到成段的正文（可能是列表页，或需要登录）');
+        res.writeHead(200);
+        return res.end(JSON.stringify({
+          ok: false,
+          error: '这个页面没找到成段的正文（可能是列表页，或需要登录）',
+          debug: Object.assign({}, a.debug || {}, {
+            status: r.status,
+            finalUrl: r.url,
+            rawHead: String(r.body).slice(0, 160)
+          })
+        }));
       }
       if (a.html.replace(/<[^>]+>/g, '').trim().length < 80) {
         throw new Error('正文太短，不适合当文档');
