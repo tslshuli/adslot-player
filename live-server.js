@@ -454,7 +454,9 @@ function proxyStream(target, req, res, refOverride) {
     port: tu.port || (tu.protocol === 'https:' ? 443 : 80),
     path: tu.pathname + tu.search,
     method: 'GET',
-    headers
+    headers,
+    // 每个分段单独建连，不复用连接池，避免长连接卡死后续请求
+    agent: false
   }, (pres) => {
     const out = Object.assign({}, pres.headers);
     // 放开跨域，去掉会拦死我们的头
@@ -489,6 +491,15 @@ function proxyStream(target, req, res, refOverride) {
     if (code < 200 || code > 599) code = 200;
 
     res.writeHead(code, out);
+
+    // 上游中途断开时必须把响应结束掉，否则这条连接会挂住，
+    // 浏览器并发数很快被占满，表现就是"卡住不动"。
+    pres.on('error', () => { try { res.end(); } catch (_) {} });
+    pres.on('aborted', () => { try { res.end(); } catch (_) {} });
+
+    res.on('close', () => { try { pres.destroy(); } catch (_) {} });
+    res.on('finish', () => { try { pres.destroy(); } catch (_) {} });
+
     pres.pipe(res);
   });
 
