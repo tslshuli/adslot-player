@@ -1,0 +1,351 @@
+<p>本文档整理自日常运维过程中的巡检项、判读标准与处置流程，适用于机房自建及云上独立部署的 Linux 服务器。内容以可执行命令和明确阈值为主，便于交接与复用。</p>
+
+      <p>文档中的命令默认以 <code>root</code> 或具备 <code>sudo</code> 权限的账号执行。涉及生产环境的操作（重启服务、清理文件、调整内核参数）请先在测试环境验证，并保留操作记录。</p>
+
+      <h2 id="s1">1 适用范围与约定</h2>
+
+      <h3>1.1 适用对象</h3>
+
+      <ul>
+        <li>操作系统：CentOS 7 / Rocky Linux 8+ / Ubuntu 20.04+</li>
+        <li>部署形态：单机部署、主备部署、容器化部署（Docker / Podman）</li>
+        <li>不覆盖：Kubernetes 集群运维、云厂商托管数据库的底层维护</li>
+      </ul>
+
+      <h3>1.2 术语约定</h3>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>术语</th>
+            <th>含义</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>巡检</td>
+            <td>按固定周期对系统状态做只读检查，不做任何变更</td>
+          </tr>
+          <tr>
+            <td>阈值</td>
+            <td>触发人工介入的指标上限，本文档中的数值为默认建议值</td>
+          </tr>
+          <tr>
+            <td>处置</td>
+            <td>对异常项做变更操作，须记录时间、操作人、变更内容</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="s2">2 巡检周期与责任划分</h2>
+
+      <p>巡检分日常、周度、月度三档。日常项只做读取和记录，发现问题走告警流程；周度、月度项包含例行清理与验证，可以安排在业务低峰期执行。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>巡检项</th>
+            <th>周期</th>
+            <th>执行方式</th>
+            <th>记录位置</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>硬件与负载状态</td>
+            <td>每日</td>
+            <td>手动 / 脚本</td>
+            <td>巡检表</td>
+          </tr>
+          <tr>
+            <td>磁盘与 inode</td>
+            <td>每日</td>
+            <td>脚本采集</td>
+            <td>监控平台</td>
+          </tr>
+          <tr>
+            <td>服务进程与端口</td>
+            <td>每日</td>
+            <td>脚本采集</td>
+            <td>监控平台</td>
+          </tr>
+          <tr>
+            <td>日志切割与清理</td>
+            <td>每周</td>
+            <td>手动确认</td>
+            <td>变更单</td>
+          </tr>
+          <tr>
+            <td>系统补丁评估</td>
+            <td>每月</td>
+            <td>手动</td>
+            <td>变更单</td>
+          </tr>
+          <tr>
+            <td>备份可恢复性验证</td>
+            <td>每月</td>
+            <td>实际恢复一次</td>
+            <td>演练记录</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <blockquote>备份"看起来成功"和"真的能恢复"是两件事。每月至少挑一台机器做一次完整恢复，恢复不出来等于没备份。</blockquote>
+
+      <h2 id="s3">3 系统层巡检</h2>
+
+      <h3>3.1 负载与 CPU</h3>
+
+      <pre><code>uptime
+top -bn1 | head -20
+mpstat -P ALL 1 3      # 需要 sysstat</code></pre>
+
+      <p>判读标准：<code>load average</code> 的 1 分钟值连续 5 分钟超过 CPU 核数的 1.5 倍，视为异常。注意 15 分钟值仍然很高但 1 分钟值已回落的情况，通常说明压力刚过去，先观察不要立即处置。</p>
+
+      <p>若 <code>%sy</code>（内核态）持续偏高，优先排查中断是否集中在单核；若 <code>%wa</code>（IO 等待）偏高，转去看磁盘章节。</p>
+
+      <h3>3.2 内存</h3>
+
+      <pre><code>free -h
+vmstat 1 5</code></pre>
+
+      <p>看 <code>available</code> 而不是 <code>free</code>。<code>free</code> 数值低是正常现象，Linux 会主动用空闲内存做缓存。<code>available</code> 低于总内存的 10% 时，结合 <code>vmstat</code> 的 <code>si/so</code> 两列判断：两列长期非零说明已经在换页，需要处理。</p>
+
+      <h3>3.3 磁盘空间</h3>
+
+      <pre><code>df -hT
+du -sh /var/* 2>/dev/null | sort -rh | head -10
+lsof +L1 | head -20      # 已删除但被占用的文件</code></pre>
+
+      <p>使用率 80% 预警，90% 处理。常见的大文件位置如下，清理前确认是否还在写入。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>路径</th>
+            <th>常见内容</th>
+            <th>处理方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>/var/log</td>
+            <td>系统与应用日志</td>
+            <td>配 logrotate，确认切割后再删</td>
+          </tr>
+          <tr>
+            <td>/var/lib/docker</td>
+            <td>镜像与容器层</td>
+            <td>prune 无标签镜像</td>
+          </tr>
+          <tr>
+            <td>/tmp</td>
+            <td>临时文件</td>
+            <td>按 mtime 清理，注意挂载类型</td>
+          </tr>
+          <tr>
+            <td>/home/*/.cache</td>
+            <td>用户缓存</td>
+            <td>确认用户无任务后清理</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p><code>df</code> 显示已满但 <code>du</code> 统计不出来，说明有进程持有已删除的文件句柄，用 <code>lsof +L1</code> 定位，重启对应进程即可释放。</p>
+
+      <h3>3.4 inode 使用率</h3>
+
+      <pre><code>df -i</code></pre>
+
+      <p>小文件多的场景（邮件队列、会话文件、临时分片）容易出现空间还有、inode 先满。典型表现是新文件无法创建但 <code>df -h</code> 看着很正常。</p>
+
+      <h2 id="s4">4 服务层巡检</h2>
+
+      <h3>4.1 服务状态</h3>
+
+      <pre><code>systemctl --failed
+systemctl status nginx --no-pager
+systemctl list-units --type=service --state=running</code></pre>
+
+      <h3>4.2 端口与连接</h3>
+
+      <pre><code>ss -tlnp
+ss -s
+ss -ant | awk '{print $1}' | sort | uniq -c | sort -rn | head</code></pre>
+
+      <p>重点看 <code>TIME-WAIT</code> 与 <code>CLOSE-WAIT</code> 的数量。前者偏高通常是短连接过多，可以调内核参数缓解；后者偏高说明对端已关闭但本端没释放，多半是应用没有正确关闭连接，要从代码侧处理。</p>
+
+      <h3>4.3 文件句柄</h3>
+
+      <pre><code>cat /proc/sys/fs/file-nr
+ulimit -n
+ls /proc/&lt;pid&gt;/fd | wc -l</code></pre>
+
+      <p>第一列是已分配句柄数，接近上限时新连接会被拒绝。调整 <code>LimitNOFILE</code> 后必须重启对应服务才生效，<code>systemctl reload</code> 不够。</p>
+
+      <h2 id="s5">5 日志检查</h2>
+
+      <pre><code>journalctl -p err --since "24 hours ago"
+tail -n 200 /var/log/nginx/error.log
+awk '$9 ~ /^5/ {print $7}' /var/log/nginx/access.log | sort | uniq -c | sort -rn | head</code></pre>
+
+      <p>最后一条用于统计 5xx 按 URL 聚合，能快速定位是全局故障还是单个接口的问题。日志量大的机器建议先 <code>tail</code> 再处理，避免 <code>cat</code> 大文件拖慢机器。</p>
+
+      <p>logrotate 的最小可用配置：</p>
+
+      <pre><code>/var/log/app/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}</code></pre>
+
+      <p><code>copytruncate</code> 适用于程序不支持重开日志文件句柄的情况，代价是切割瞬间可能丢少量日志。支持 <code>SIGHUP</code> 的程序应该改用 <code>create</code> 配合 <code>postrotate</code>。</p>
+
+      <h2 id="s6">6 常见故障处置</h2>
+
+      <p>下表按现象索引。处置列的步骤按顺序执行，前一步没解决问题再做下一步。</p>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>现象</th>
+            <th>可能原因</th>
+            <th>处置</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>磁盘满，写入失败</td>
+            <td>日志未切割 / 镜像堆积</td>
+            <td>lsof 查句柄 → 清理 → 配 logrotate</td>
+          </tr>
+          <tr>
+            <td>服务在但无响应</td>
+            <td>进程假死、死锁</td>
+            <td>抓栈 → 重启 → 保留现场</td>
+          </tr>
+          <tr>
+            <td>CPU 持续 100%</td>
+            <td>死循环、异常进程</td>
+            <td>top 定位 → 确认归属 → 处理</td>
+          </tr>
+          <tr>
+            <td>新连接被拒绝</td>
+            <td>文件句柄或端口耗尽</td>
+            <td>查 file-nr / ulimit → 调整 → 重启</td>
+          </tr>
+          <tr>
+            <td>时间漂移</td>
+            <td>NTP 未同步</td>
+            <td>chronyc sources → 重新同步</td>
+          </tr>
+          <tr>
+            <td>磁盘 IO 高</td>
+            <td>大量小文件读写、swap</td>
+            <td>iostat 定位设备 → 查进程 io</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>6.1 服务假死的处理顺序</h3>
+
+      <p>不要上来就重启。先留证据：</p>
+
+      <pre><code>ps -eo pid,ppid,stat,wchan,cmd --sort=-%cpu | head -20
+cat /proc/&lt;pid&gt;/stack          # 需要 root
+gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</code></pre>
+
+      <p>拿到栈之后再重启。没有栈的故障复盘会变成猜谜，同样的问题会反复出现。</p>
+
+      <h2 id="s7">7 备份与恢复</h2>
+
+      <p>遵循 3-2-1 原则：三份副本、两种介质、一份异地。落地时至少保证有一份不在同一台物理机上。</p>
+
+      <pre><code>rsync -avz --delete --exclude='*.tmp' \
+      /data/ backup@10.0.0.12:/backup/data/</code></pre>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>备份对象</th>
+            <th>频率</th>
+            <th>保留</th>
+            <th>验证方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>业务数据目录</td>
+            <td>每日</td>
+            <td>30 天</td>
+            <td>每月恢复一次</td>
+          </tr>
+          <tr>
+            <td>数据库全量</td>
+            <td>每日</td>
+            <td>14 天</td>
+            <td>导入测试库校验</td>
+          </tr>
+          <tr>
+            <td>配置文件</td>
+            <td>变更时</td>
+            <td>永久</td>
+            <td>版本库对比</td>
+          </tr>
+          <tr>
+            <td>系统镜像</td>
+            <td>每月</td>
+            <td>3 个版本</td>
+            <td>试启动</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <blockquote>恢复演练要真的恢复到一台干净的机器上。在同机器上解压看文件在不在，验证不了依赖、权限和启动顺序。</blockquote>
+
+      <h2 id="s8">8 附录：常用命令速查</h2>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>用途</th>
+            <th>命令</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>查看端口占用</td>
+            <td><code>ss -tlnp | grep :80</code></td>
+          </tr>
+          <tr>
+            <td>查看进程资源</td>
+            <td><code>pidstat -p &lt;pid&gt; 1 5</code></td>
+          </tr>
+          <tr>
+            <td>磁盘 IO 分布</td>
+            <td><code>iostat -x 1 5</code></td>
+          </tr>
+          <tr>
+            <td>网络丢包</td>
+            <td><code>ss -i</code></td>
+          </tr>
+          <tr>
+            <td>内核参数</td>
+            <td><code>sysctl -a | grep net.core</code></td>
+          </tr>
+          <tr>
+            <td>启动耗时</td>
+            <td><code>systemd-analyze blame</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="s9">9 文档维护</h2>
+
+      <p>本文档随实际处置经验更新。新增故障案例时，按"现象—原因—处置—验证"四段写，不要只写结论，否则半年后没人看得懂当时为什么这么处理。</p>
+
+      <p>阈值部分（80%、90%、1.5 倍核数）是通用建议值，实际部署应按业务特点调整。业务侧对延迟敏感的场景，IO 与连接数的阈值应当收紧。</p>

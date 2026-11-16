@@ -233,6 +233,91 @@ async function resolveBilibili(roomUrl) {
   return { flv, m3u8, referer: 'https://live.bilibili.com/' };
 }
 
+/* --------------------------------------------- 网页正文提取 */
+
+function extractArticle(rawHtml) {
+  let s = String(rawHtml);
+
+  let title = '';
+  const tm = s.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (tm) title = tm[1].replace(/\s+/g, ' ').trim();
+
+  // 去掉不会出现在正文里的块
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, '')
+       .replace(/<style[\s\S]*?<\/style>/gi, '')
+       .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+       .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+       .replace(/<svg[\s\S]*?<\/svg>/gi, '')
+       .replace(/<head[\s\S]*?<\/head>/gi, '')
+       .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+       .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+       .replace(/<aside[\s\S]*?<\/aside>/gi, '')
+       .replace(/<!--[\s\S]*?-->/g, '');
+
+  // 优先取语义化的正文容器
+  const cands = [
+    /<article[^>]*>([\s\S]*?)<\/article>/i,
+    /<main[^>]*>([\s\S]*?)<\/main>/i,
+    /<div[^>]+(?:id|class)="[^"]*(?:article|content|post|detail|entry|main)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+    /<body[^>]*>([\s\S]*?)<\/body>/i
+  ];
+
+  // 挑选「最像正文」的容器：段落数量优先，其次文本长度
+  let best = null;
+  let bestScore = -1;
+  for (const re of cands) {
+    const m = re.exec(s);
+    if (!m || !m[1]) continue;
+
+    const txt = m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const pCount = (m[1].match(/<p\b/gi) || []).length;
+    const score = pCount * 800 + txt.length;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = m[1];
+    }
+  }
+  if (!best) best = s;
+  let body = best;
+
+  // 只保留这些标签，其余去掉但保留文字
+  const ALLOW = new Set([
+    'h1', 'h2', 'h3', 'h4', 'p', 'ul', 'ol', 'li', 'blockquote',
+    'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'strong', 'em', 'b', 'i', 'br', 'hr'
+  ]);
+
+  body = body.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g, (m, tag) => {
+    const t = tag.toLowerCase();
+    if (!ALLOW.has(t)) return '';
+    return m.charAt(1) === '/' ? '</' + t + '>' : '<' + t + '>';
+  });
+
+  // 页面标题已经是 h1，正文里的 h1 降级
+  body = body.replace(/<h1>/g, '<h2>').replace(/<\/h1>/g, '</h2>');
+
+  // 丢掉过短的列表项，多半是导航菜单
+  body = body.replace(/<li>([\s\S]*?)<\/li>/g, (m, inner) => {
+    const t = inner.replace(/<[^>]+>/g, '').trim();
+    return t.length >= 10 ? m : '';
+  });
+
+  // 清理空标签与连续空行
+  body = body.replace(/<p>\s*<\/p>/g, '')
+             .replace(/<ul>\s*<\/ul>/g, '')
+             .replace(/<ol>\s*<\/ol>/g, '')
+             .replace(/\n{3,}/g, '\n\n')
+             .trim();
+
+  // 段落太少说明没抓到正文，不要硬塞给用户
+  if ((body.match(/<p>/g) || []).length < 2) {
+    return { title, html: '' };
+  }
+
+  return { title, html: body };
+}
+
 /* --------------------------------------------- B 站普通视频（点播） */
 
 async function resolveBilibiliVideo(videoUrl) {
@@ -398,6 +483,54 @@ const server = http.createServer(async (req, res) => {
         .sort();
       res.end(JSON.stringify({ ok: true, files: list }));
     });
+    return;
+  }
+
+  if (u.pathname === '/docs-list') {
+    const dir = path.join(ROOT, 'docs');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    fs.readdir(dir, (err, files) => {
+      if (err) return res.end(JSON.stringify({ ok: true, files: [] }));
+      const list = files
+        .filter((f) => /\.(html?|md)$/i.test(f))
+        .sort()
+        .map((f) => {
+          const base = f.replace(/\.[^.]+$/, '');
+          const m = base.match(/^\d+[-_.\s]+(.+)$/);
+          return {
+            file: f,
+            title: (m ? m[1] : base).trim(),
+            type: /\.md$/i.test(f) ? 'md' : 'html'
+          };
+        });
+      res.end(JSON.stringify({ ok: true, files: list, dir: 'docs' }));
+    });
+    return;
+  }
+
+  if (u.pathname === '/fetch') {
+    const target = u.searchParams.get('u');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    if (!target) {
+      res.writeHead(400);
+      return res.end(JSON.stringify({ ok: false, error: '缺少参数 u' }));
+    }
+    try {
+      const r = await get(target);
+      if (r.status !== 200) throw new Error('目标页面返回 HTTP ' + r.status);
+      const a = extractArticle(r.body);
+      if (!a.html) {
+        throw new Error('这个页面没找到成段的正文（可能是列表页，或需要登录）');
+      }
+      if (a.html.replace(/<[^>]+>/g, '').trim().length < 80) {
+        throw new Error('正文太短，不适合当文档');
+      }
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: true, title: a.title, html: a.html, url: r.url }));
+    } catch (e) {
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
     return;
   }
 

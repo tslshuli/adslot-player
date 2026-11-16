@@ -1487,517 +1487,12 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       <span id="liveMsg"></span>
     </div>
     <div class="lp-tip">
-      支持抖音直播、B 站直播 / B 站视频，或 .mp4 / .flv / .m3u8 直链
+      直播 / 视频链接会播放视频；其他网页链接会抓取正文；也可把本地视频拖进页面
     </div>
   </div>
 </div>
 
-<!-- 轮换文档模板（不渲染，供 JS 切换使用） -->
-<template id="doc-tpl-1">
-<p>本文整理数据库备份的选型、执行与恢复流程，重点是"恢复"而不是"备份"。多数事故不是因为没备份，而是因为需要恢复时才发现备份不可用、或者不知道恢复到哪个时间点。</p>
-
-      <p>文中命令以 MySQL / PostgreSQL 为例，其他数据库思路一致。生产环境的恢复操作必须在隔离环境先演练，确认无误后再动线上。</p>
-
-      <h2 id="s1">1 适用范围与前提</h2>
-
-      <h3>1.1 适用对象</h3>
-
-      <ul>
-        <li>关系型数据库：MySQL 5.7+ / 8.0、PostgreSQL 12+</li>
-        <li>部署形态：单机、主从、云托管实例（托管实例至少要做逻辑导出，不能只依赖厂商快照）</li>
-        <li>数据量：单库 500GB 以内可以走逻辑备份；再大要考虑物理备份或快照</li>
-      </ul>
-
-      <h3>1.2 前提条件</h3>
-
-      <ul>
-        <li>备份账号具备 <code>SELECT</code>、<code>RELOAD</code>、<code>LOCK TABLES</code>（MySQL）或 <code>REPLICATION</code> 权限</li>
-        <li>备份目录所在磁盘剩余空间不少于数据量的 3 倍</li>
-        <li>已开启 binlog / WAL 归档，且保留期覆盖最长恢复需求</li>
-      </ul>
-
-      <blockquote>没有验证过恢复的备份，只能算"有文件"，不能算"有备份"。这句话听着像口号，但每年都有团队栽在上面。</blockquote>
-
-      <h2 id="s2">2 备份类型与选型</h2>
-
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>类型</th>
-            <th>速度</th>
-            <th>恢复粒度</th>
-            <th>适用场景</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>逻辑全量（dump）</td>
-            <td>慢</td>
-            <td>库 / 表</td>
-            <td>中小库、跨版本迁移</td>
-          </tr>
-          <tr>
-            <td>物理全量（xtrabackup）</td>
-            <td>快</td>
-            <td>实例</td>
-            <td>大库、快速恢复</td>
-          </tr>
-          <tr>
-            <td>binlog / WAL</td>
-            <td>实时</td>
-            <td>时间点</td>
-            <td>误删恢复、主从同步</td>
-          </tr>
-          <tr>
-            <td>存储快照</td>
-            <td>极快</td>
-            <td>整盘</td>
-            <td>云环境、大版本变更前</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <p>实际部署通常是组合使用：每日全量 + 实时 binlog，恢复时先还原最近一次全量，再重放 binlog 到目标时间点。</p>
-
-      <h2 id="s3">3 全量备份</h2>
-
-      <h3>3.1 MySQL 逻辑备份</h3>
-
-      <pre><code>mysqldump -u backup -p \
-  --single-transaction \
-  --quick \
-  --routines --triggers --events \
-  --set-gtid-purged=OFF \
-  --databases app_db \
-  | gzip &gt; /backup/mysql/app_db_$(date +%F_%H%M).sql.gz</code></pre>
-
-      <p>几个参数不能省：<code>--single-transaction</code> 保证 InnoDB 表的一致性快照且不锁表；<code>--quick</code> 避免把大表一次性读进内存；<code>--routines --triggers --events</code> 否则存储过程、触发器会丢。</p>
-
-      <p><code>--set-gtid-purged=OFF</code> 是为了让导出的文件能在另一个实例上直接导入。如果要用于搭建从库，则应保留 GTID 信息。</p>
-
-      <h3>3.2 PostgreSQL 逻辑备份</h3>
-
-      <pre><code>pg_dump -U backup -Fc -Z 6 -f /backup/pg/app_db_$(date +%F).dump app_db</code></pre>
-
-      <p><code>-Fc</code> 输出自定义格式，支持并行恢复与选择性还原；<code>-Z 6</code> 压缩级别。纯 SQL 文本格式（<code>-Fp</code>）便于人工查看，但恢复慢、不支持并行。</p>
-
-      <h2 id="s4">4 增量：binlog 与 WAL</h2>
-
-      <p>全量备份只能恢复到备份那一刻。要恢复到"误删之前 1 分钟"，必须依赖日志。</p>
-
-      <pre><code># 确认 binlog 已开启
-SHOW VARIABLES LIKE 'log_bin';
-SHOW VARIABLES LIKE 'binlog_format';   # 应为 ROW
-
-# 查看当前写入位置
-SHOW MASTER STATUS;</code></pre>
-
-      <p><code>binlog_format</code> 必须是 <code>ROW</code>。用 <code>STATEMENT</code> 格式时，某些函数（如 <code>NOW()</code>、<code>UUID()</code>）会导致主从不一致，恢复重放也可能出错。</p>
-
-      <p>日志保留时长由 <code>binlog_expire_logs_seconds</code> 控制，默认 30 天。如果业务要求能回溯更久，要么调大，要么定期归档到对象存储。</p>
-
-      <h2 id="s5">5 存储与保留</h2>
-
-      <p>遵循 3-2-1：三份副本、两种介质、一份异地。落地时至少保证一份不在同一台物理机上、不在同一个可用区。</p>
-
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>备份对象</th>
-            <th>频率</th>
-            <th>保留</th>
-            <th>存放位置</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>全量逻辑备份</td>
-            <td>每日 02:00</td>
-            <td>30 天</td>
-            <td>本地 + 异地对象存储</td>
-          </tr>
-          <tr>
-            <td>binlog</td>
-            <td>实时</td>
-            <td>14 天</td>
-            <td>本地磁盘</td>
-          </tr>
-          <tr>
-            <td>周度归档</td>
-            <td>每周日</td>
-            <td>6 个月</td>
-            <td>异地对象存储</td>
-          </tr>
-          <tr>
-            <td>变更前快照</td>
-            <td>按需</td>
-            <td>变更后 7 天</td>
-            <td>云盘快照</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <p>注意"保留 30 天"不等于"能恢复 30 天前"。如果有备份失败未告警，中间某天缺失，恢复链就断了。所以必须有备份成功率的监控。</p>
-
-      <h2 id="s6">6 备份有效性验证</h2>
-
-      <p>验证分三层，从浅到深，建议每月至少做到第二层。</p>
-
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>层级</th>
-            <th>做法</th>
-            <th>能发现的问题</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>文件级</td>
-            <td>检查文件大小、gzip 完整性</td>
-            <td>文件截断、空文件</td>
-          </tr>
-          <tr>
-            <td>可导入</td>
-            <td>导入测试库，统计表数量与行数</td>
-            <td>语法不兼容、权限缺失、字符集错乱</td>
-          </tr>
-          <tr>
-            <td>可恢复</td>
-            <td>走完整恢复流程，业务方抽查数据</td>
-            <td>丢失索引、触发器、外键、序列值</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <pre><code># 快速检查 gzip 完整性
-gzip -t /backup/mysql/app_db_2026-11-13_0200.sql.gz &amp;&amp; echo OK
-
-# 统计备份内的表数量（MySQL 逻辑备份）
-zcat app_db_2026-11-13_0200.sql.gz | grep -c 'CREATE TABLE'</code></pre>
-
-      <h2 id="s7">7 恢复流程</h2>
-
-      <h3>7.1 误删单表</h3>
-
-      <p>不要直接在生产库上操作。先恢复到临时实例，再从临时实例导出目标表覆盖回生产。</p>
-
-      <pre><code># 1. 解出全量备份到临时实例
-gunzip -c app_db_2026-11-13.sql.gz | mysql -h temp-host -u root -p
-
-# 2. 重放 binlog 到误删前的时间点
-mysqlbinlog --stop-datetime="2026-11-14 09:41:00" \
-  /var/lib/mysql/mysql-bin.000123 \
-  | mysql -h temp-host -u root -p
-
-# 3. 单表导出并回写
-mysqldump -h temp-host -u root -p app_db orders &gt; orders_fix.sql
-mysql -u root -p app_db &lt; orders_fix.sql</code></pre>
-
-      <h3>7.2 整库误删</h3>
-
-      <p>先确认没有写入正在进行（停应用或切只读），否则恢复过程中产生的新数据会与备份冲突。恢复完成后再放开写入，并核对自增 ID 与序列是否连续。</p>
-
-      <h3>7.3 恢复到指定时间点</h3>
-
-      <p>关键在 <code>--stop-datetime</code> 的取值。判断依据是业务侧提供的最后一条正常数据的时间戳，而不是"你觉得大概什么时候删的"。宁可选晚一点、丢掉少量数据，也不要选早（会丢更多）。</p>
-
-      <blockquote>恢复前把当前库整体再备份一份，哪怕它已经是坏的。恢复过程中如果判断失误，这份"坏备份"是唯一能回到起点的东西。</blockquote>
-
-      <h2 id="s8">8 常见问题</h2>
-
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>现象</th>
-            <th>原因</th>
-            <th>处理</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>导入报字符集错误</td>
-            <td>导出与导入端默认字符集不一致</td>
-            <td>显式指定 <code>--default-character-set=utf8mb4</code></td>
-          </tr>
-          <tr>
-            <td>恢复后自增 ID 冲突</td>
-            <td>未恢复 <code>AUTO_INCREMENT</code> 值</td>
-            <td>导入后 <code>ALTER TABLE ... AUTO_INCREMENT=</code></td>
-          </tr>
-          <tr>
-            <td>备份文件明显偏小</td>
-            <td>dump 中断但管道未报错</td>
-            <td>检查 <code>PIPESTATUS</code>，不要只看最后一行</td>
-          </tr>
-          <tr>
-            <td>binlog 重放报 duplicate entry</td>
-            <td>全量备份点与 binlog 起点不匹配</td>
-            <td>核对 <code>SHOW MASTER STATUS</code> 记录的位点</td>
-          </tr>
-          <tr>
-            <td>恢复极慢</td>
-            <td>逐条 INSERT、未关自动提交</td>
-            <td>导入时 <code>SET autocommit=0</code> 并分批 commit</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <h2 id="s9">9 变更与文档维护</h2>
-
-      <p>本文档随实际演练结果更新。每次做恢复演练后，把遇到的问题补进"常见问题"表；每次调整备份策略，同步更新第 5 节的保留表。</p>
-
-      <p>建议每季度完整走一次恢复演练，选一台与生产同版本的干净机器，从零开始恢复，记录耗时。这个耗时是事故时的预期恢复时间，比任何承诺都可靠。</p>
-</template>
-
-<template id="doc-tpl-2">
-<p>网络变更的风险不在"改什么"，而在"改完之后影响了谁"。一条看起来只影响某个 VLAN 的 ACL，可能让整栋楼的打印机连不上。本文把变更拆成可检查的步骤，目的是让每一次改动都可以回退、可以复盘。</p>
-
-      <p>适用于交换机、路由器、防火墙的配置变更。云上安全组与路由表的调整同样参考本文流程。</p>
-
-      <h2 id="s1">1 目的与适用范围</h2>
-
-      <p>规范网络设备变更的申请、审批、实施与验证流程，降低因配置错误导致的业务中断，保证每次变更都有据可查、有路可退。</p>
-
-      <ul>
-        <li>覆盖设备：核心交换机、接入交换机、出口路由器、硬件防火墙</li>
-        <li>覆盖操作：VLAN 调整、ACL 变更、路由策略、端口配置、固件升级</li>
-        <li>不覆盖：新设备上线（走独立的项目流程）、纯监控采样配置</li>
-      </ul>
-
-      <h2 id="s2">2 变更分级</h2>
-
-      <p>分级决定审批人与实施时间窗口。定级的核心是"最坏情况下影响多少人"，不是"改几行命令"。</p>
-
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>级别</th>
-            <th>判定标准</th>
-            <th>审批</th>
-            <th>时间窗口</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>A 级（重大）</td>
-            <td>影响核心链路、出口、跨机房互通</td>
-            <td>网络负责人 + 业务负责人</td>
-            <td>夜间 22:00 后</td>
-          </tr>
-          <tr>
-            <td>B 级（常规）</td>
-            <td>影响单个楼层或单个业务系统</td>
-            <td>网络负责人</td>
-            <td>业务低峰期</td>
-          </tr>
-          <tr>
-            <td>C 级（轻微）</td>
-            <td>不影响转发，如描述、备注、监控采样</td>
-            <td>组长</td>
-            <td>工作时间内</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <p>定级有争议时，按高一级处理。把 A 级当 B 级做，代价通常是通宵。</p>
-
-      <h2 id="s3">3 变更申请要素</h2>
-
-      <p>一份可以执行的变更单至少包含六项，缺任何一项都应该退回补充。</p>
-
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>要素</th>
-            <th>要求</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>变更内容</td>
-            <td>具体配置差异，以"改前 / 改后"两段配置呈现</td>
-          </tr>
-          <tr>
-            <td>影响范围</td>
-            <td>涉及哪台设备、哪些网段、哪些业务系统</td>
-          </tr>
-          <tr>
-            <td>实施时间</td>
-            <td>起止时间，含验证时间</td>
-          </tr>
-          <tr>
-            <td>回滚方案</td>
-            <td>具体命令，不是"恢复原配置"这种话</td>
-          </tr>
-          <tr>
-            <td>验证方法</td>
-            <td>从哪台机器、用什么命令、看到什么算成功</td>
-          </tr>
-          <tr>
-            <td>失败预案</td>
-            <td>回滚后仍不通时的升级路径与联系人</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <blockquote>"回滚方案：恢复原配置"——这句话等于没有回滚方案。真出事的时候，没人能在三分钟内凭记忆还原几十行配置。</blockquote>
-
-      <h2 id="s4">4 变更前准备</h2>
-
-      <h3>4.1 配置备份</h3>
-
-      <pre><code># H3C / 华为
-display current-configuration &gt; startup.cfg.bak
-# Cisco
-show running-config | tee /tftp/cfg-$(date +%F).txt
-
-# 自动备份（以 telnet/ssh + expect 为例，示意）
-ssh admin@10.0.0.1 "show running-config" &gt; /backup/sw-core-$(date +%F_%H%M).cfg</code></pre>
-
-      <p>备份必须落到**另一台机器**上。存在设备内部的备份，在设备起不来的时候等于没有。</p>
-
-      <h3>4.2 检查清单</h3>
-
-      <ul>
-        <li>确认当前无其他人在同一设备上操作</li>
-        <li>确认带外管理通道可用（Console 或独立管理网）</li>
-        <li>确认备用链路或冗余设备处于正常状态</li>
-        <li>确认实施期间无人做关联变更</li>
-        <li>确认回滚命令已经过验证（至少在一台同型号设备上试过）</li>
-      </ul>
-
-      <h2 id="s5">5 实施步骤</h2>
-
-      <p>以交换机 ACL 变更为例。原则是：一次只改一个维度，改完立刻验证，不要连续下十条命令再一起看结果。</p>
-
-      <pre><code># 1. 进入配置模式
-system-view
-
-# 2. 先看现有 ACL，确认编号未被占用
-display acl 3001
-
-# 3. 修改时尽量用"追加 + 最后拒绝"，而不是插到中间
-acl number 3001
- rule 100 permit tcp source 10.10.20.0 0.0.0.255 destination 10.10.30.10 0
- rule 900 deny ip
-
-# 4. 每次改动后立刻保存
-save force</code></pre>
-
-      <p>为什么不建议在已有规则中间插入新规则：多数设备按顺序匹配，插入会导致后续序号整体偏移，原有规则的实际生效顺序变了，而配置文件里看起来"只是多了一条"。</p>
-
-      <h3>5.1 涉及远程操作时的自保</h3>
-
-      <pre><code># 先设置一个自动回滚定时器，10 分钟不确认就还原
-# 各厂商命令不同，思路一致
-schedule reboot at 23:50    # 兜底：到点重启回默认配置（谨慎使用）
-# 或使用 commit-confirmed（Juniper / 部分华为）
-commit confirmed 10</code></pre>
-
-      <p>如果设备支持"确认式提交"，一定用它。改错了没确认，设备会自动回滚，这是唯一能救回远程失联的手段。</p>
-
-      <h2 id="s6">6 回滚方案</h2>
-
-      <p>回滚要写成可以直接粘贴的命令序列，而不是描述。</p>
-
-      <pre><code># 回滚：删除本次新增的规则
-system-view
-acl number 3001
- undo rule 100
- quit
-save force
-
-# 或整段恢复备份（注意会覆盖其他变更）
-tftp 10.0.0.200 get cfg-2026-11-14_2130.cfg startup.cfg
-reboot</code></pre>
-
-      <p>整段恢复的风险是会把别人在备份之后做的变更一起冲掉。所以回滚优先用"逐条 undo"，整段恢复只在设备配置已完全混乱时使用。</p>
-
-      <h2 id="s7">7 变更后验证</h2>
-
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>验证项</th>
-            <th>方法</th>
-            <th>通过标准</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>配置生效</td>
-            <td>display current-configuration 对比</td>
-            <td>与变更单一致</td>
-          </tr>
-          <tr>
-            <td>连通性</td>
-            <td>从业务网段 ping / telnet 目标</td>
-            <td>与变更前一致</td>
-          </tr>
-          <tr>
-            <td>路由表</td>
-            <td>display ip routing-table</td>
-            <td>无意外路由消失</td>
-          </tr>
-          <tr>
-            <td>端口状态</td>
-            <td>display interface brief</td>
-            <td>无端口意外 down</td>
-          </tr>
-          <tr>
-            <td>业务验证</td>
-            <td>业务方实际访问</td>
-            <td>业务方书面确认</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <p>最后一项不能省。技术上通不代表业务上通，反过来也成立。让业务方点一下，比看一百行 show 命令有用。</p>
-
-      <h2 id="s8">8 记录与归档</h2>
-
-      <p>变更单在实施完成后 24 小时内归档，附上：改前配置、改后配置、验证截图、实际耗时。如果中途有偏差（比如原计划改 3 条实际改了 5 条），在备注里写清楚原因。</p>
-
-      <p>归档不是为了应付检查。半年后同一台设备再出问题，这些记录是唯一能还原"当时为什么这么配"的材料。</p>
-
-      <h2 id="s9">9 常见事故与复盘要点</h2>
-
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>事故类型</th>
-            <th>典型原因</th>
-            <th>复盘该问什么</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>远程失联</td>
-            <td>改管理网 ACL 未保留自身来源</td>
-            <td>为什么没用确认式提交</td>
-          </tr>
-          <tr>
-            <td>业务中断</td>
-            <td>ACL 顺序导致默认拒绝提前命中</td>
-            <td>变更前有没有在测试设备验证</td>
-          </tr>
-          <tr>
-            <td>环路</td>
-            <td>STP 未开启或优先级配置错误</td>
-            <td>接入层是否统一了 STP 策略</td>
-          </tr>
-          <tr>
-            <td>回滚失败</td>
-            <td>备份文件不完整或缺依赖</td>
-            <td>备份是否在另一台机器上、是否验证过</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <p>复盘要追问流程，而不是追问人。"谁改的"没有价值，"为什么这个环节没拦住"才有。</p>
-</template>
-
+<script src="libs/marked.min.js"></script>
 <script src="libs/flv.min.js"></script>
 <script src="libs/hls.min.js"></script>
 
@@ -2205,6 +1700,21 @@ reboot</code></pre>
         setLiveMsg('已取到流，正在连接…', 'ok');
         playLive(src);
         try { localStorage.setItem('wbLiveRoom', raw); } catch (e) {}
+      } else if (/^https?:\/\//i.test(raw)) {
+        // 普通网页 —— 抓正文当文档
+        setLiveMsg('正在抓取网页正文…');
+        var fres = await fetch('/fetch?u=' + encodeURIComponent(raw));
+        var fdata = await fres.json();
+        if (!fdata.ok) throw new Error(fdata.error || '抓取失败');
+        closeLivePanel();
+        addDoc({
+          title: fdata.title || '网页内容',
+          sub: '',
+          meta: '<span>来源 <b>' + esc(String(raw).replace(/^https?:\/\//, '').slice(0, 48)) + '</b></span>',
+          file: null,
+          html: fdata.html
+        });
+        return;
       } else {
         liveReferer = '';
         playLive(raw);
@@ -2497,26 +2007,15 @@ reboot</code></pre>
   });
 
   /* ---------- 正文轮换 ---------- */
-  var DOCS = [
-    {
-      title: '服务器日常巡检与故障处理手册',
-      sub: '覆盖系统层与服务层的日常巡检项、判读阈值与常见故障处置流程，适用于自建机房与云上独立部署。',
-      meta: '<span>文档编号 <b>OPS-MAN-014</b></span><span>版本 <b>v3.4</b></span><span>更新 2026-11-12</span><span>维护 <b>基础设施组</b></span>',
-      tpl: null
-    },
-    {
-      title: '数据库备份与恢复操作指南',
-      sub: '备份选型、执行与恢复流程，重点在"能不能恢复"，而不是"有没有备份"。',
-      meta: '<span>文档编号 <b>OPS-DB-007</b></span><span>版本 <b>v2.6</b></span><span>更新 2026-10-28</span><span>维护 <b>数据库组</b></span>',
-      tpl: 'doc-tpl-1'
-    },
-    {
-      title: '网络设备配置变更流程',
-      sub: '规范网络设备变更的申请、审批、实施与验证，保证每次改动有据可查、有路可退。',
-      meta: '<span>文档编号 <b>OPS-NET-021</b></span><span>版本 <b>v1.9</b></span><span>更新 2026-11-05</span><span>维护 <b>网络组</b></span>',
-      tpl: 'doc-tpl-2'
-    }
-  ];
+  var BUILTIN_DOC = {
+    title: '服务器日常巡检与故障处理手册',
+    sub: '覆盖系统层与服务层的日常巡检项、判读阈值与常见故障处置流程，适用于自建机房与云上独立部署。',
+    meta: '<span>文档编号 <b>OPS-MAN-014</b></span><span>版本 <b>v3.4</b></span><span>更新 2026-11-12</span><span>维护 <b>基础设施组</b></span>',
+    tpl: null
+  };
+
+  // 内置一篇兜底；docs/ 目录有文件时会整体替换掉
+  var DOCS = [BUILTIN_DOC];
 
   var docTitleEl = document.getElementById('docTitle');
   var docSubEl = document.getElementById('docSub');
@@ -2527,31 +2026,108 @@ reboot</code></pre>
   var firstBodyHtml = docBodyEl ? docBodyEl.innerHTML : '';
   var curDoc = 0;
 
-  function renderDoc(i) {
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  /* 从 docs/ 目录读文档列表 */
+  async function loadDocs() {
+    if (location.protocol === 'file:') return;
+
+    try {
+      var r = await fetch('/docs-list');
+      var d = await r.json();
+      if (!d.ok || !d.files || !d.files.length) return;
+
+      DOCS = d.files.map(function (f) {
+        return {
+          title: f.title,
+          sub: '',
+          meta: '<span>本地文档 <b>' + esc(f.file) + '</b></span>',
+          file: f.file,
+          type: f.type,
+          html: null
+        };
+      });
+
+      renderDoc(0);
+    } catch (e) {
+      // 拿不到列表就继续用内置那篇
+    }
+  }
+
+  /* 渲染第 i 篇 */
+  async function renderDoc(i) {
     if (!docBodyEl) return;
+
     curDoc = ((i % DOCS.length) + DOCS.length) % DOCS.length;
     var d = DOCS[curDoc];
 
     docTitleEl.textContent = d.title;
-    docSubEl.textContent = d.sub;
-    docMetaEl.innerHTML = d.meta;
+    docMetaEl.innerHTML = d.meta || '';
 
-    docBodyEl.innerHTML = d.tpl
-      ? document.getElementById(d.tpl).innerHTML
-      : firstBodyHtml;
+    var html;
 
-    // 目录跟着正文重建
+    if (d.file) {
+      if (!d.html) {
+        try {
+          var resp = await fetch('/docs/' + encodeURIComponent(d.file));
+          var text = await resp.text();
+          if (d.type === 'md') {
+            html = window.marked ? window.marked.parse(text) : '<pre>' + esc(text) + '</pre>';
+          } else {
+            html = text;
+          }
+          d.html = html;
+        } catch (e) {
+          html = '<p>文档加载失败：' + esc(d.file) + '</p>';
+        }
+      } else {
+        html = d.html;
+      }
+    } else {
+      html = d.tpl ? document.getElementById(d.tpl).innerHTML : firstBodyHtml;
+    }
+
+    docBodyEl.innerHTML = html;
+
+    // 副标题：优先用配置，否则取正文第一段
+    var sub = d.sub;
+    if (!sub) {
+      var fp = docBodyEl.querySelector('p');
+      sub = fp ? fp.textContent.trim().slice(0, 92) : '';
+    }
+    if (sub) {
+      docSubEl.textContent = sub;
+      docSubEl.style.display = '';
+    } else {
+      docSubEl.textContent = '';
+      docSubEl.style.display = 'none';
+    }
+
+    // 目录：给没有 id 的 h2 补上锚点
     docTocEl.innerHTML = '';
-    Array.prototype.forEach.call(docBodyEl.querySelectorAll('h2'), function (h) {
+    Array.prototype.forEach.call(docBodyEl.querySelectorAll('h2'), function (h, idx) {
+      if (!h.id) h.id = 'sec-' + (idx + 1);
       var li = document.createElement('li');
       var a = document.createElement('a');
-      a.href = '#' + (h.id || '');
+      a.href = '#' + h.id;
       a.textContent = h.textContent;
       li.appendChild(a);
       docTocEl.appendChild(li);
     });
 
     window.scrollTo(0, 0);
+  }
+
+  /* 把外部抓来的正文加进轮换列表并立即显示 */
+  function addDoc(doc) {
+    DOCS.push(doc);
+    renderDoc(DOCS.length - 1);
   }
 
   var SWITCH_MS = 20 * 60 * 1000;
@@ -2641,6 +2217,7 @@ reboot</code></pre>
   moveTo(0);
   startAdRotation();
   mountAdVideos();
+  loadDocs();
 })();
 </script>
 </body>
