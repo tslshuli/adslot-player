@@ -534,6 +534,49 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (u.pathname === '/save-doc' && req.method === 'POST') {
+    let raw = '';
+    req.on('data', (c) => {
+      raw += c;
+      if (raw.length > 3 * 1024 * 1024) req.destroy();
+    });
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      try {
+        const d = JSON.parse(raw);
+        const title = String(d.title || '网页内容')
+          .replace(/[\\/:*?"<>|]/g, '_')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 60) || '网页内容';
+        const html = String(d.html || '');
+
+        if (html.replace(/<[^>]+>/g, '').trim().length < 50) {
+          throw new Error('内容太短，不保存');
+        }
+
+        const dir = path.join(ROOT, 'docs');
+        fs.mkdirSync(dir, { recursive: true });
+
+        const nums = fs.readdirSync(dir).map((f) => {
+          const m = f.match(/^(\d+)-/);
+          return m ? Number(m[1]) : 0;
+        });
+        const next = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
+        const name = String(next).padStart(2, '0') + '-' + title + '.html';
+
+        fs.writeFileSync(path.join(dir, name), html, 'utf8');
+
+        res.writeHead(200);
+        res.end(JSON.stringify({ ok: true, file: name }));
+      } catch (e) {
+        res.writeHead(200);
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   if (u.pathname === '/proxy') {
     const target = u.searchParams.get('u');
     if (!target) {

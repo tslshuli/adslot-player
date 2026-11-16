@@ -1707,6 +1707,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         var fdata = await fres.json();
         if (!fdata.ok) throw new Error(fdata.error || '抓取失败');
         closeLivePanel();
+        lastFetched = { title: fdata.title || '网页内容', html: fdata.html };
         addDoc({
           title: fdata.title || '网页内容',
           sub: '',
@@ -1714,6 +1715,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
           file: null,
           html: fdata.html
         });
+        toast('已加入轮换，按 S 可保存到 docs/');
         return;
       } else {
         liveReferer = '';
@@ -1994,6 +1996,10 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       case 'N':
         nextDoc();
         break;
+      case 's':
+      case 'S':
+        saveFetched();
+        break;
       case 'm':
       case 'M':
         vid.muted = !vid.muted;
@@ -2128,6 +2134,27 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   function addDoc(doc) {
     DOCS.push(doc);
     renderDoc(DOCS.length - 1);
+  }
+
+  /* 抓来的网页内容，按 S 可以落盘到 docs/ */
+  var lastFetched = null;
+
+  async function saveFetched() {
+    if (!lastFetched) { toast('没有待保存的网页'); return; }
+
+    try {
+      var r = await fetch('/save-doc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(lastFetched)
+      });
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.error || '保存失败');
+      toast('已存入 docs/' + d.file);
+      lastFetched = null;
+    } catch (e) {
+      toast('保存失败：' + (e.message || ''));
+    }
   }
 
   var SWITCH_MS = 20 * 60 * 1000;
