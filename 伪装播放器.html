@@ -1605,6 +1605,19 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     liveMode = false;
   }
 
+  /* B 站 / 抖音的播放地址有时效，断了自动重新取一次 */
+  var recoverCount = 0;
+
+  function autoRecover() {
+    if (recoverCount >= 2) {
+      toast('播放中断了，按 R 手动重试');
+      return;
+    }
+    recoverCount++;
+    toast('连接断了，正在自动重连…');
+    setTimeout(function () { refreshLive(); }, 1200);
+  }
+
   function playLive(rawUrl) {
     destroyPlayers();
 
@@ -1635,7 +1648,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       flvPlayer.attachMediaElement(vid);
       flvPlayer.on(window.flvjs.Events.ERROR, function (t, d) {
         console.warn('[flv]', t, d);
-        toast('直播流中断');
+        autoRecover();
       });
       flvPlayer.load();
       vid.play().catch(function () {});
@@ -1646,12 +1659,13 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       hlsPlayer.loadSource(proxied);
       hlsPlayer.attachMedia(vid);
       hlsPlayer.on(window.Hls.Events.ERROR, function (_, d) {
-        if (d && d.fatal) toast('直播流中断');
+        if (d && d.fatal) autoRecover();
       });
       vid.play().catch(function () {});
       toast('直播已接入');
     } else {
-      // 兜底：当普通直链处理
+      // 兜底：当普通直链处理（B 站点播的 mp4 走这里）
+      vid.onerror = function () { autoRecover(); };
       vid.src = proxied;
       vid.play().catch(function () {});
       toast('已开始播放');
@@ -2245,6 +2259,9 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   startAdRotation();
   mountAdVideos();
   loadDocs();
+
+  // 真正播起来了才把自动重连计数清零，避免刚一连上就重置
+  vid.addEventListener('playing', function () { recoverCount = 0; });
 })();
 </script>
 </body>

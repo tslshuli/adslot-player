@@ -461,14 +461,29 @@ function proxyStream(target, req, res, refOverride) {
     delete out['content-security-policy'];
     delete out['content-security-policy-report-only'];
     delete out['x-frame-options'];
-    // 直播是持续流，长度/编码相关的头必须清掉，否则浏览器会一直等"下完"
-    delete out['content-length'];
+
+    // 点播（mp4 / 206 分段）必须保留 content-length 和 content-range，
+    // 否则浏览器算不出总时长、也算不出进度，拖进度条会直接卡死。
+    // 直播（FLV）是无限流，反而不能带 content-length，否则浏览器会一直等"下完"。
+    const isPartial = pres.statusCode === 206;
+    const ctype = String(pres.headers['content-type'] || '');
+    const isVod = isPartial || /^(video|audio)\//i.test(ctype);
+
+    if (isVod) {
+      delete out['transfer-encoding'];
+    } else {
+      delete out['content-length'];
+      delete out['transfer-encoding'];
+    }
+
     delete out['content-encoding'];
-    delete out['transfer-encoding'];
     delete out['connection'];
     delete out['keep-alive'];
+
+    if (isVod && !out['accept-ranges']) out['accept-ranges'] = 'bytes';
+
     out['access-control-allow-origin'] = '*';
-    out['cache-control'] = 'no-cache';
+    out['cache-control'] = isVod ? 'max-age=3600' : 'no-cache';
 
     let code = pres.statusCode;
     if (code < 200 || code > 599) code = 200;
