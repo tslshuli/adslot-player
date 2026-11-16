@@ -730,6 +730,29 @@
   }
   .ad-close:hover { background: rgba(0, 0, 0, .6); color: #fff; }
 
+  /* 集数角标：小、淡，只有多集时才显示；可点击切集，绕开输入法 */
+  .ep-badge {
+    position: absolute;
+    left: 6px;
+    top: 23px;
+    font-size: 9px;
+    line-height: 1;
+    padding: 2px 5px;
+    background: rgba(0, 0, 0, .28);
+    color: #cfcfcf;
+    border-radius: 2px;
+    letter-spacing: .3px;
+    pointer-events: auto;
+    cursor: pointer;
+    user-select: none;
+    z-index: 5;
+    opacity: .55;
+    transition: opacity .15s, background .15s;
+  }
+  #adStage:hover .ep-badge { opacity: 1; }
+  .ep-badge:hover { background: rgba(0, 0, 0, .62); color: #fff; }
+  .ep-badge.hide { display: none; }
+
   #adEmpty {
     position: absolute;
     inset: 0;
@@ -937,8 +960,8 @@
 
     <div class="art-meta" id="docMeta">
       <span>文档编号 <b>OPS-MAN-014</b></span>
-      <span>版本 <b>v3.4</b></span>
-      <span>更新 2026-11-12</span>
+      <span>版本 <b>v3.5</b></span>
+      <span>更新 2026-11-16</span>
       <span>维护 <b>基础设施组</b></span>
     </div>
 
@@ -1428,6 +1451,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       <video id="vid" muted playsinline preload="metadata"></video>
 
       <div class="ad-badge">广告</div>
+      <div class="ep-badge hide" id="epBadge" title="点一下：下一集（Shift+点击：上一集）"></div>
       <div class="ad-close" id="adClose" title="关闭广告">×</div>
 
       <div id="adEmpty">
@@ -1511,6 +1535,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   var btnPlay = document.getElementById('btnPlay');
   var btnMute = document.getElementById('btnMute');
   var adClose = document.getElementById('adClose');
+  var epBadge = document.getElementById('epBadge');
   var dropHint = document.getElementById('dropHint');
   var toastEl = document.getElementById('toast');
 
@@ -1523,6 +1548,12 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   var hlsPlayer = null;
   var liveMode = false;
   var liveReferer = '';
+
+  /* ---- B 站多集连播 ---- */
+  var episodes = [];        // 剧集列表 [{bvid, cid, title}]
+  var epIndex = 0;          // 当前第几集（0 起）
+  var lastRoom = '';        // 当前源的原始链接，切集后 R 刷新要用
+  var autoNext = true;      // 播完自动下一集
 
   var slots = Array.prototype.slice.call(rail.querySelectorAll('.ad-slot'));
 
@@ -1685,6 +1716,8 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 
   function closeLivePanel() {
     livePanel.classList.remove('on');
+    // 关键：把焦点移出输入框，否则全局快捷键会被"输入框内不处理"的规则吞掉
+    try { if (document.activeElement === liveInput) liveInput.blur(); } catch (e) {}
   }
 
   async function startLive() {
@@ -1701,6 +1734,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       if (/\.flv(\?|$)/i.test(raw) || /\.m3u8(\?|$)/i.test(raw) || /\.mp4(\?|$)/i.test(raw)) {
         setLiveMsg('直链，正在连接…');
         liveReferer = '';
+        episodes = []; epIndex = 0; updateEpBadge();
         playLive(raw);
         try { localStorage.setItem('wbLiveRoom', raw); } catch (e) {}
       } else if (/douyin\.com|bilibili\.com|b23\.tv/i.test(raw)) {
@@ -1711,8 +1745,17 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         liveReferer = data.referer || '';
         var src = (data.direct && data.direct[0]) || (data.flv && data.flv[0]) || (data.m3u8 && data.m3u8[0]);
         if (!src) throw new Error('没拿到可用的播放地址');
+
+        episodes = data.episodes || [];
+        epIndex = data.index || 0;
+        lastRoom = raw;
+        updateEpBadge();
+
         setLiveMsg('已取到流，正在连接…', 'ok');
         playLive(src);
+        if (episodes.length > 1) {
+          toast('共 ' + episodes.length + ' 集 · 播完自动续 · . 切下一集');
+        }
         try { localStorage.setItem('wbLiveRoom', raw); } catch (e) {}
       } else if (/^https?:\/\//i.test(raw)) {
         // 普通网页 —— 抓正文当文档
@@ -1759,10 +1802,18 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         playLive(room);
         return;
       }
-      var resp = await fetch('/resolve?u=' + encodeURIComponent(room));
+      var resp = await resolveCurrent(room);
       var data = await resp.json();
       if (!data.ok) throw new Error(data.error || '取流失败');
       liveReferer = data.referer || '';
+
+      // 关键：R 刷新也要把剧集列表和当前集补回来，否则视频能播但没有角标、切集无效
+      if (data.episodes && data.episodes.length) {
+        episodes = data.episodes;
+        epIndex = data.index || 0;
+        updateEpBadge();
+      }
+
       var src = (data.direct && data.direct[0]) || (data.flv && data.flv[0]) || (data.m3u8 && data.m3u8[0]);
       if (!src) throw new Error('没拿到可用地址');
       playLive(src);
@@ -1770,6 +1821,64 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       toast('刷新失败：' + (e.message || '未知错误'));
     }
   }
+
+  /* 多集时带上当前 bvid/cid，避免 R 刷新跳回第一集 */
+  function resolveCurrent(room) {
+    var u = '/resolve?u=' + encodeURIComponent(room);
+    if (episodes.length > 1 && episodes[epIndex]) {
+      u += '&bvid=' + encodeURIComponent(episodes[epIndex].bvid)
+        + '&cid=' + encodeURIComponent(episodes[epIndex].cid);
+    }
+    return fetch(u);
+  }
+
+  /* 切到指定集：idx 超出范围时停住并提示 */
+  async function gotoEpisode(idx) {
+    if (!episodes.length) { toast('当前视频没有分集'); return; }
+    if (idx < 0 || idx >= episodes.length) {
+      toast(idx < 0 ? '已经是第一集了' : '已经是最后一集了');
+      return;
+    }
+    var ep = episodes[idx];
+    setLiveMsg('正在加载第 ' + (idx + 1) + ' 集…');
+    try {
+      var u = '/resolve?u=' + encodeURIComponent(lastRoom || ep.bvid)
+        + '&bvid=' + encodeURIComponent(ep.bvid)
+        + '&cid=' + encodeURIComponent(ep.cid);
+      var resp = await fetch(u);
+      var data = await resp.json();
+      if (!data.ok) throw new Error(data.error || '取流失败');
+      liveReferer = data.referer || '';
+      var src = (data.direct && data.direct[0]) || (data.flv && data.flv[0]) || (data.m3u8 && data.m3u8[0]);
+      if (!src) throw new Error('没拿到可用地址');
+
+      // 后端可能修正了列表，以返回的为准
+      if (data.episodes && data.episodes.length) episodes = data.episodes;
+      epIndex = data.index == null ? idx : data.index;
+      updateEpBadge();
+
+      playLive(src);
+      recoverCount = 0;
+      toast('第 ' + (epIndex + 1) + ' / ' + episodes.length + ' 集 · ' + (episodes[epIndex].title || '').slice(0, 14));
+    } catch (e) {
+      setLiveMsg('切集失败：' + (e.message || '未知错误'), 'err');
+    }
+  }
+
+  function updateEpBadge() {
+    if (episodes.length > 1) {
+      epBadge.textContent = '▶ ' + (epIndex + 1) + ' / ' + episodes.length;
+      epBadge.classList.remove('hide');
+    } else {
+      epBadge.classList.add('hide');
+    }
+  }
+
+  // 点角标切集：普通点击下一集，Shift+点击上一集
+  epBadge.addEventListener('click', function (e) {
+    e.stopPropagation();
+    gotoEpisode(epIndex + (e.shiftKey ? -1 : 1));
+  });
 
   liveGo.addEventListener('click', startLive);
   liveInput.addEventListener('keydown', function (e) {
@@ -1784,6 +1893,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   function loadFile(file) {
     if (!file) return;
     destroyPlayers();
+    episodes = []; epIndex = 0; updateEpBadge();
     if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; }
     objectUrl = URL.createObjectURL(file);
     vid.src = objectUrl;
@@ -1801,6 +1911,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       return;
     }
     destroyPlayers();
+    episodes = []; epIndex = 0; updateEpBadge();
     vid.src = url;
     closed = false;
     empty.classList.add('hide');
@@ -1879,7 +1990,18 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 
   vid.addEventListener('click', togglePlay);
   vid.addEventListener('dblclick', function (e) { e.preventDefault(); toggleBig(); });
-  vid.addEventListener('ended', function () { btnPlay.textContent = '▶'; });
+  vid.addEventListener('ended', function () {
+    btnPlay.textContent = '▶';
+    // 多集点播：播完自动进入下一集
+    if (!liveMode && episodes.length > 1 && autoNext) {
+      if (epIndex < episodes.length - 1) {
+        toast('播完了，下一集…');
+        gotoEpisode(epIndex + 1);
+      } else {
+        toast('已经是最后一集了');
+      }
+    }
+  });
 
   seek.addEventListener('mousedown', function () { seeking = true; });
   seek.addEventListener('input', function () {
@@ -1952,10 +2074,27 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   /* ---------- 快捷键 ---------- */
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+    var inField = tag === 'input' || tag === 'textarea' || e.target.isContentEditable;
+
+    // 中文输入法下标点键会变成全角：。→ . ，→ , 》→ > 《→ <
+    var key = e.key;
+    if (key === '。') key = '.';
+    if (key === '，') key = ',';
+    if (key === '》') key = '>';
+    if (key === '《') key = '<';
+    // 物理键位兜底：e.code 不受输入法影响
+    if (e.code === 'Period') key = '.';
+    if (e.code === 'Comma') key = ',';
+
+    // 在输入框里时：Escape 关面板；切集键照常穿透（输入框里这些键无其他用途）
+    var epKeys = ['.', '>', 'ArrowRight', 'PageDown', ',', '<', 'ArrowLeft', 'PageUp'];
+    if (inField) {
+      if (key === 'Escape') { closeLivePanel(); return; }
+      if (epKeys.indexOf(key) === -1) return;
+    }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
 
-    switch (e.key) {
+    switch (key) {
       case 'Tab':                       // 视频换到下一个广告位
         e.preventDefault();
         moveTo(curSlot + (e.shiftKey ? -1 : 1));
@@ -2009,6 +2148,20 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       case 'n':
       case 'N':
         nextDoc();
+        break;
+      case '.':                         // 下一集（含中文输入法下的 》）
+      case '>':
+      case '》':
+      case 'ArrowRight':
+      case 'PageDown':
+        if (episodes.length > 1) { e.preventDefault(); gotoEpisode(epIndex + 1); }
+        break;
+      case ',':                         // 上一集（含中文输入法下的 《）
+      case '<':
+      case '《':
+      case 'ArrowLeft':
+      case 'PageUp':
+        if (episodes.length > 1) { e.preventDefault(); gotoEpisode(epIndex - 1); }
         break;
       case 's':
       case 'S':

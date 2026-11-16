@@ -367,32 +367,8 @@ function extractArticle(rawHtml) {
 
 /* --------------------------------------------- B 站普通视频（点播） */
 
-async function resolveBilibiliVideo(videoUrl) {
-  // 先从链接里找 BV 号；短链（b23.tv）需要跟随跳转后再找
-  let m = String(videoUrl).match(/BV[0-9A-Za-z]{10}/);
-
-  if (!m) {
-    const r0 = await get(videoUrl, { Referer: 'https://www.bilibili.com/' });
-    m = String(r0.url || '').match(/BV[0-9A-Za-z]{10}/) ||
-        String(r0.body || '').match(/BV[0-9A-Za-z]{10}/);
-  }
-
-  if (!m) throw new Error('链接里没找到 BV 号，请用完整视频链接');
-
-  const bvid = m[0];
-
-  // 取 cid
-  const vp = JSON.parse((await get('https://api.bilibili.com/x/web-interface/view?bvid=' + bvid, {
-    Referer: 'https://www.bilibili.com/'
-  })).body);
-
-  if (vp.code !== 0 || !vp.data) {
-    throw new Error('取视频信息失败：' + (vp.message || vp.code));
-  }
-
-  const cid = vp.data.cid;
-
-  // 不带 fnval 时返回单文件（mp4 / flv），比 DASH 好处理
+// 取单集播放直链（不带 fnval，返回单文件 mp4，比 DASH 好处理）
+async function fetchBiliDirect(bvid, cid) {
   const api = 'https://api.bilibili.com/x/player/playurl'
     + '?bvid=' + bvid + '&cid=' + cid + '&qn=64&fnver=0&fourk=0';
 
@@ -407,13 +383,105 @@ async function resolveBilibiliVideo(videoUrl) {
     throw new Error('没拿到播放地址（付费或大会员专享视频无法播放）');
   }
 
-  const direct = durl.map((d) => d.url).filter(Boolean);
+  return durl.map((d) => d.url).filter(Boolean);
+}
+
+// opt.bvid / opt.cid：切集时指定目标集，避免只按 p= 定位在合集里失效
+async function resolveBilibiliVideo(videoUrl, opt) {
+  opt = opt || {};
+
+  // 先从链接里找 BV 号；短链（b23.tv）需要跟随跳转后再找
+  let m = String(videoUrl).match(/BV[0-9A-Za-z]{10}/);
+
+  if (!m) {
+    const r0 = await get(videoUrl, { Referer: 'https://www.bilibili.com/' });
+    m = String(r0.url || '').match(/BV[0-9A-Za-z]{10}/) ||
+        String(r0.body || '').match(/BV[0-9A-Za-z]{10}/);
+  }
+
+  if (!m) throw new Error('链接里没找到 BV 号，请用完整视频链接');
+
+  const bvid = m[0];
+
+  // ?p=N 只用于分P视频的起点
+  let startPage = 1;
+  const pm = String(videoUrl).match(/[?&]p=(\d+)/);
+  if (pm) startPage = Math.max(1, parseInt(pm[1], 10) || 1);
+
+  const vp = JSON.parse((await get('https://api.bilibili.com/x/web-interface/view?bvid=' + bvid, {
+    Referer: 'https://www.bilibili.com/'
+  })).body);
+
+  if (vp.code !== 0 || !vp.data) {
+    throw new Error('取视频信息失败：' + (vp.message || vp.code));
+  }
+
+  const d = vp.data;
+  let episodes = [];
+  let hasSeason = false;
+
+  // 形态一：UP 主合集 / 系列 —— 每集是独立 BV
+  const season = d.ugc_season;
+  if (season && season.sections) {
+    season.sections.forEach(function (sec) {
+      (sec.episodes || []).forEach(function (ep) {
+        if (ep.bvid && ep.cid) {
+          episodes.push({
+            bvid: ep.bvid,
+            cid: ep.cid,
+            title: String(ep.title || ep.page?.part || '').slice(0, 40),
+            section: String(sec.title || '').slice(0, 20)
+          });
+        }
+      });
+    });
+    hasSeason = episodes.length > 0;
+  }
+
+  // 形态二：分P视频 —— 同一个 BV，不同 cid
+  if (!episodes.length && d.pages && d.pages.length > 1) {
+    episodes = d.pages.map(function (p) {
+      return {
+        bvid: bvid,
+        cid: p.cid,
+        title: String(p.part || '').slice(0, 40),
+        page: p.page
+      };
+    });
+  }
+
+  // 形态三：单集兜底
+  if (!episodes.length) {
+    episodes = [{ bvid: bvid, cid: d.cid, title: String(d.title || '').slice(0, 40), page: 1 }];
+  }
+
+  // 决定从第几集开始
+  let index = 0;
+  if (opt.bvid && opt.cid) {
+    const found = episodes.findIndex(function (e) {
+      return e.bvid === opt.bvid && String(e.cid) === String(opt.cid);
+    });
+    if (found >= 0) index = found;
+  } else if (hasSeason) {
+    // 合集：定位到用户粘贴的那一集
+    const found = episodes.findIndex(function (e) { return e.bvid === bvid; });
+    if (found >= 0) index = found;
+  } else if (episodes.length > 1) {
+    // 分P：按 ?p=
+    const found = episodes.findIndex(function (e) { return e.page === startPage; });
+    if (found >= 0) index = found;
+  }
+
+  const cur = episodes[index];
+  const direct = await fetchBiliDirect(cur.bvid, cur.cid);
 
   return {
-    title: (vp.data.title || '').slice(0, 40),
+    title: cur.title,
     direct: direct,
     multi: direct.length > 1,
-    referer: 'https://www.bilibili.com/'
+    referer: 'https://www.bilibili.com/',
+    episodes: episodes,
+    index: index
   };
 }
 
@@ -535,7 +603,10 @@ function serveStatic(pathname, res) {
     }
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(full).toLowerCase()] || 'application/octet-stream',
-      'Cache-Control': 'no-cache'
+      // 彻底禁缓存：避免重启服务后浏览器仍复用旧页面
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
     });
     res.end(data);
   });
@@ -685,7 +756,10 @@ const server = http.createServer(async (req, res) => {
       if (/live\.bilibili\.com/i.test(room)) {
         r = await resolveBilibili(room);
       } else if (/bilibili\.com|b23\.tv|BV[0-9A-Za-z]{10}/i.test(room)) {
-        r = await resolveBilibiliVideo(room);
+        r = await resolveBilibiliVideo(room, {
+          bvid: u.searchParams.get('bvid') || '',
+          cid: u.searchParams.get('cid') || ''
+        });
       } else if (/douyin\.com/i.test(room)) {
         r = await resolveStream(room);
       } else {
@@ -699,7 +773,9 @@ const server = http.createServer(async (req, res) => {
         direct: r.direct || [],
         referer: r.referer || '',
         title: r.title || '',
-        multi: !!r.multi
+        multi: !!r.multi,
+        episodes: r.episodes || [],
+        index: r.index || 0
       }));
     } catch (e) {
       res.writeHead(200);
