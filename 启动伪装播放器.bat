@@ -8,7 +8,7 @@ set "NODE=node"
 goto run
 
 :usemanaged
-set "NODE=C:\Users\EDY\.workbuddy\binaries\node\versions\22.22.2-6\node.exe"
+set "NODE=%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-6\node.exe"
 
 :run
 start "" "http://127.0.0.1:8848/"

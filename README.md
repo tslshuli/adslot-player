@@ -121,11 +121,14 @@ python tools/import-doc.py 手册.docx 数据.xlsx 汇报.pptx
 ## 工作原理
 
 ```
-浏览器 ──> 本地 Node 服务 ──> 视频源 CDN
+浏览器 ──> 本地 Node 服务 ──> 视频源 CDN / 任意网页
              │
              ├── /            静态页面
              ├── /resolve     解析直播间 / 视频页 → 直链
-             └── /proxy       转发视频流，按源补 Referer / UA
+             ├── /proxy       转发视频流，按源补 Referer / UA，处理 Range
+             ├── /docs-list   列出 docs/ 下的文档
+             ├── /fetch       抓取网页正文
+             └── /save-doc    把抓取内容存入 docs/
 ```
 
 三个关键点：
@@ -165,10 +168,20 @@ python tools/make-ad-videos.py
 - B 站分段视频（durl 多段）目前只播第一段
 - 抖音流地址有效期通常几小时，过期需要按 `R` 重新取
 - 网页抓取只读取服务端返回的 HTML，纯前端渲染的页面（SPA）可能抓不到正文
+- 部分站点（如百家号）有安全验证，抓取会被拦截，需换来源或稍后再试
+
+## 隐私说明
+
+- 仓库内不含任何账号、密码、Token、私钥或个人身份信息。
+- 两个 `.bat` 启动脚本通过 PATH / `%USERPROFILE%` 查找运行时，不写死本机用户名。
+- 文档中出现的 `10.0.0.x` / `10.10.x.x` 均为 RFC 1918 内网保留地址，仅作示例。
+- 服务只监听 `127.0.0.1`，不对外网开放；抓取网页时仅服务端请求目标站点，不上传本地数据。
+- `.gitignore` 已排除本地记忆、凭据文件、截图与无关项目目录。
 
 ## 第三方库
 
 - [flv.js](https://github.com/bilibili/flv.js) — Apache-2.0
 - [hls.js](https://github.com/video-dev/hls.js) — Apache-2.0
+- [marked](https://github.com/markedjs/marked) — MIT
 
 均以本地文件形式内置，便于离线使用。

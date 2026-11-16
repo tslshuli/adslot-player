@@ -14,7 +14,7 @@ if "%~1"=="" (
     exit /b 0
 )
 
-set "PY=C:\Users\EDY\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+set "PY=%USERPROFILE%\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
 if exist "%PY%" goto run
 
 where python >nul 2>nul
