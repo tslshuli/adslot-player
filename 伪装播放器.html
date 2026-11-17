@@ -1943,7 +1943,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         episodes = []; epIndex = 0; updateEpBadge();
         playLive(raw);
         try { localStorage.setItem('wbLiveRoom', raw); } catch (e) {}
-      } else if (/douyin\.com|bilibili\.com|b23\.tv|gqc\.ink/i.test(raw)) {
+      } else if (/douyin\.com|bilibili\.com|b23\.tv/i.test(raw)) {
         setLiveMsg('正在取流…');
         var resp = await fetch('/resolve?u=' + encodeURIComponent(raw));
         var data = await resp.json();
@@ -2029,10 +2029,9 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   }
 
   /* 多集时带上当前 bvid/cid，避免 R 刷新跳回第一集 */
-  /* 按剧集类型构造 resolve 请求：
-     gqc 用 page（每集一个页面 URL），B站用 bvid+cid */
+  /* B站用 bvid+cid 定位当前集 */
   function resolveFor(ep, fallbackRoom) {
-    var u = '/resolve?u=' + encodeURIComponent((ep && ep.page) || fallbackRoom || (ep && ep.bvid) || '');
+    var u = '/resolve?u=' + encodeURIComponent(fallbackRoom || (ep && ep.bvid) || '');
     if (ep && ep.bvid && ep.cid) {
       u += '&bvid=' + encodeURIComponent(ep.bvid)
         + '&cid=' + encodeURIComponent(ep.cid);
