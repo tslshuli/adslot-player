@@ -1791,15 +1791,26 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       vid.play().catch(function () {});
       toast('直播已接入');
     } else if (isHls && window.Hls && window.Hls.isSupported()) {
-      liveMode = true;
+      // 不能一进来就标 liveMode：点播 m3u8（TVBox 的剧集）也走这里，
+      // 标成直播会让进度条显示「直播」、并让播完自动连播的逻辑永远不成立。
+      // 等清单加载完，用 details.live 判断到底是不是直播。
+      // 注意：lowLatencyMode / liveSyncDurationCount 只对真直播流生效，
+      // hls.js 遇到点播清单会自动忽略，所以这里保持直播优化参数不变。
+      // 关键是不预设 liveMode —— 那才是挡住自动连播的原因。
       hlsPlayer = new window.Hls({ lowLatencyMode: true, liveSyncDurationCount: 3 });
+      hlsPlayer.on(window.Hls.Events.LEVEL_LOADED, function (_, data) {
+        var d = data && data.details;
+        if (d) liveMode = !!d.live;
+      });
+      // 点播 m3u8 播到最后一个分片时，有的情况 ended 不触发，用这个兜底
+      hlsPlayer.on(window.Hls.Events.BUFFER_EOS, function () { episodeEnded(); });
       hlsPlayer.loadSource(proxied);
       hlsPlayer.attachMedia(vid);
       hlsPlayer.on(window.Hls.Events.ERROR, function (_, d) {
         if (d && d.fatal) autoRecover();
       });
       vid.play().catch(function () {});
-      toast('直播已接入');
+      toast('已开始播放');
     } else {
       // 兜底：当普通直链处理（B 站点播的 mp4 走这里）
       vid.onerror = function () { autoRecover(); };
@@ -2235,9 +2246,14 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   vid.addEventListener('pause', function () { btnPlay.textContent = '▶'; });
 
   vid.addEventListener('timeupdate', function () {
-    if (liveMode || !isFinite(vid.duration)) {
+    if (liveMode) {
       clock.textContent = '直播';
       seek.value = 0;
+      return;
+    }
+    // 点播的时长还没解析出来时别显示「直播」，否则点播 m3u8 加载瞬间会闪一下
+    if (!isFinite(vid.duration)) {
+      clock.textContent = fmt(vid.currentTime) + ' / --:--';
       return;
     }
     if (!seeking && vid.duration) {
@@ -2248,18 +2264,23 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 
   vid.addEventListener('click', togglePlay);
   vid.addEventListener('dblclick', function (e) { e.preventDefault(); toggleBig(); });
-  vid.addEventListener('ended', function () {
+
+  /* 一集播完 → 自动下一集。
+     两个触发源：video 的 ended（mp4 直链），以及 hls.js 的 BUFFER_EOS
+     （点播 m3u8 播到最后一个分片时，ended 不一定触发）。
+     用时间戳防抖，避免两者同时到达时连跳两集。 */
+  var nextAt = 0;
+  function episodeEnded() {
     btnPlay.textContent = '▶';
-    // 多集点播：播完自动进入下一集
-    if (!liveMode && episodes.length > 1 && autoNext) {
-      if (epIndex < episodes.length - 1) {
-        toast('播完了，下一集…');
-        gotoEpisode(epIndex + 1);
-      } else {
-        toast('已经是最后一集了');
-      }
-    }
-  });
+    if (!autoNext || episodes.length <= 1) return;
+    if (vid.duration === Infinity) return;        // 真直播，不连播
+    if (Date.now() - nextAt < 2000) return;       // 防抖
+    if (epIndex >= episodes.length - 1) { toast('已经是最后一集了'); return; }
+    nextAt = Date.now();
+    toast('播完了，下一集…');
+    gotoEpisode(epIndex + 1);
+  }
+  vid.addEventListener('ended', episodeEnded);
 
   seek.addEventListener('mousedown', function () { seeking = true; });
   seek.addEventListener('input', function () {
