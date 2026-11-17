@@ -24,3 +24,12 @@ _frames/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# ===== 自己导入的正文（可能含公司内部数据）=====
+# 仓库是 public，只自带 01/02/03 三篇示例文档。
+# 自己导入的正文（以及 docs/img/ 里的图）默认不提交。
+# 确实想让某一篇进仓库，在下面照样式补一行例外即可。
+docs/*
+!docs/01-*.html
+!docs/02-*.html
+!docs/03-*.html

@@ -154,6 +154,13 @@
     display: inline-block;
     margin: 0;
   }
+  /* PPT 里的原生图表重画成了内联 SVG，同样要限宽 */
+  .article svg.doc-chart {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+  }
   .article pre code {
     background: none;
     padding: 0;

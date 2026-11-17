@@ -82,6 +82,201 @@ def media_ref(el, rels, media, tag='img'):
     return '<img src="%s" alt="">' % (PH % target)
 
 
+# ------------------------------------------------------------------ 图表渲染
+# PPT 里的「图」常常不是图片，而是原生图表对象（c:chart）。
+# 这种在图里没有任何像素，只能按数据重新画。这里用内联 SVG 画出来。
+
+C = '{http://schemas.openxmlformats.org/drawingml/2006/chart}'
+
+CHART_COLORS = ['#4a6fa5', '#7fa0c4', '#a9c2da', '#d3e0ec',
+                '#5b7fa6', '#93aec8', '#bdd0e0', '#e2ebf3']
+
+
+def _fmt_num(v):
+    if v == int(v):
+        return str(int(v))
+    return ('%.1f' % v).rstrip('0').rstrip('.')
+
+
+def _polar(cx, cy, r, deg):
+    import math
+    a = math.radians(deg)
+    return cx + r * math.cos(a), cy + r * math.sin(a)
+
+
+def _ring_path(cx, cy, ri, ro, a0, a1):
+    large = 1 if (a1 - a0) > 180 else 0
+    x0o, y0o = _polar(cx, cy, ro, a0)
+    x1o, y1o = _polar(cx, cy, ro, a1)
+    x1i, y1i = _polar(cx, cy, ri, a1)
+    x0i, y0i = _polar(cx, cy, ri, a0)
+    return ('M %.2f %.2f A %.2f %.2f 0 %d 1 %.2f %.2f L %.2f %.2f '
+            'A %.2f %.2f 0 %d 0 %.2f %.2f Z'
+            % (x0o, y0o, ro, ro, large, x1o, y1o,
+               x1i, y1i, ri, ri, large, x0i, y0i))
+
+
+def _read_chart(root):
+    """取出 (类目列表, [(系列名, 数值列表), ...])"""
+    cats = []
+    series = []
+    for ser in root.findall('.//' + C + 'ser'):
+        name = ''
+        tx = ser.find(C + 'tx')
+        if tx is not None:
+            vs = [x.text for x in tx.iter(C + 'v') if x.text]
+            name = vs[0] if vs else ''
+        cs = [x.text or '' for x in ser.findall('.//' + C + 'cat//' + C + 'v')]
+        raw = [x.text or '' for x in ser.findall('.//' + C + 'val//' + C + 'v')]
+        vals = []
+        for r in raw:
+            try:
+                vals.append(float(r))
+            except ValueError:
+                vals.append(0.0)
+        if cs and not cats:
+            cats = cs
+        series.append((name, vals))
+    return cats, series
+
+
+def _svg_bar(cats, vals, horizontal=False):
+    """簇状柱形图（也只画第一个系列，够用且不糊）"""
+    if not vals or not cats:
+        return ''
+    n = min(len(vals), len(cats))
+    vals, cats = vals[:n], cats[:n]
+
+    if horizontal:
+        w, h = 620, max(140, 34 * n + 46)
+        pad_l, pad_r, pad_t, pad_b = 96, 54, 14, 18
+        plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+        vmax = max(vals) or 1.0
+        slot = plot_h / n
+        bh = min(24.0, slot * 0.6)
+        out = []
+        for i, v in enumerate(vals):
+            bw = plot_w * (v / vmax) if vmax else 0
+            y = pad_t + slot * i + (slot - bh) / 2
+            out.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="%s" rx="2"/>'
+                       % (pad_l, y, bw, bh, CHART_COLORS[0]))
+            out.append('<text x="%.1f" y="%.1f" font-size="11" fill="#4a5468" text-anchor="end">%s</text>'
+                       % (pad_l - 8, y + bh / 2 + 4, html.escape(cats[i][:12])))
+            out.append('<text x="%.1f" y="%.1f" font-size="10.5" fill="#5a6478">%s</text>'
+                       % (pad_l + bw + 6, y + bh / 2 + 4, _fmt_num(v)))
+    else:
+        w, h = 620, 300
+        pad_l, pad_r, pad_t, pad_b = 48, 16, 22, 52
+        plot_w, plot_h = w - pad_l - pad_r, h - pad_t - pad_b
+        vmax = max(vals) or 1.0
+        slot = plot_w / n
+        bw = min(48.0, slot * 0.55)
+        out = []
+        for k in range(5):
+            y = pad_t + plot_h * k / 4.0
+            val = vmax * (4 - k) / 4.0
+            out.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="#e8ebf0"/>'
+                       % (pad_l, y, w - pad_r, y))
+            out.append('<text x="%.1f" y="%.1f" font-size="10" fill="#98a1b2" text-anchor="end">%s</text>'
+                       % (pad_l - 6, y + 3.5, _fmt_num(val)))
+        for i, v in enumerate(vals):
+            bh = plot_h * (v / vmax) if vmax else 0
+            x = pad_l + slot * i + (slot - bw) / 2
+            y = pad_t + plot_h - bh
+            out.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="%s" rx="2"/>'
+                       % (x, y, bw, bh, CHART_COLORS[0]))
+            out.append('<text x="%.1f" y="%.1f" font-size="10.5" fill="#5a6478" text-anchor="middle">%s</text>'
+                       % (x + bw / 2, y - 6, _fmt_num(v)))
+            out.append('<text x="%.1f" y="%.1f" font-size="10" fill="#6b7280" text-anchor="middle">%s</text>'
+                       % (x + bw / 2, pad_t + plot_h + 18, html.escape(cats[i][:8])))
+    return ('<svg viewBox="0 0 %d %d" width="%d" height="%d" '
+            'xmlns="http://www.w3.org/2000/svg" class="doc-chart" role="img">%s</svg>'
+            % (w, h, w, h, ''.join(out)))
+
+
+def _svg_ring(cats, vals, hole=0.55):
+    """饼图 / 环形图（hole=0 就是饼图）"""
+    if not vals or not cats:
+        return ''
+    n = min(len(vals), len(cats))
+    vals, cats = vals[:n], cats[:n]
+    total = sum(vals)
+    if total <= 0:
+        return ''
+
+    w, h = 460, 300
+    cx, cy = 150.0, h / 2.0
+    ro = 118.0
+    ri = ro * hole
+    out = []
+    start = -90.0
+    for i, v in enumerate(vals):
+        ang = 360.0 * v / total
+        end = start + ang
+        color = CHART_COLORS[i % len(CHART_COLORS)]
+        if ang >= 359.99:
+            # 整圆：单段圆弧画不出 360°，用描边圆环代替
+            out.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="none" stroke="%s" stroke-width="%.1f"/>'
+                       % (cx, cy, (ro + ri) / 2, color, ro - ri))
+        else:
+            out.append('<path d="%s" fill="%s"/>'
+                       % (_ring_path(cx, cy, ri, ro, start, end), color))
+        start = end
+
+    # 右侧图例：条目多时自动压缩行距，别溢出画布
+    step = min(44.0, (h - 56.0) / max(1, n))
+    ly = 50.0
+    for i, v in enumerate(vals):
+        color = CHART_COLORS[i % len(CHART_COLORS)]
+        pct = 100.0 * v / total
+        out.append('<rect x="288" y="%.1f" width="10" height="10" fill="%s" rx="2"/>'
+                   % (ly - 9, color))
+        out.append('<text x="304" y="%.1f" font-size="11" fill="#4a5468">%s</text>'
+                   % (ly, html.escape(cats[i][:10])))
+        out.append('<text x="304" y="%.1f" font-size="10.5" fill="#8a94a6">%s（%.0f%%）</text>'
+                   % (ly + 13, _fmt_num(v), pct))
+        ly += step
+
+    return ('<svg viewBox="0 0 %d %d" width="%d" height="%d" '
+            'xmlns="http://www.w3.org/2000/svg" class="doc-chart" role="img">%s</svg>'
+            % (w, h, w, h, ''.join(out)))
+
+
+def chart_svg(z, path):
+    """把一个 OOXML 图表渲染成内联 SVG；不认识的类型返回空串"""
+    if not path or path not in z.namelist():
+        return ''
+    try:
+        root = ET.fromstring(z.read(path))
+    except ET.ParseError:
+        return ''
+
+    kind = ''
+    for el in root.iter():
+        t = el.tag.split('}')[-1]
+        if t in ('barChart', 'pieChart', 'doughnutChart', 'lineChart', 'areaChart'):
+            kind = t
+            break
+    if not kind:
+        return ''
+
+    cats, series = _read_chart(root)
+    if not cats or not series:
+        return ''
+    vals = series[0][1]
+
+    if kind == 'barChart':
+        bar_dir = root.find('.//' + C + 'barDir')
+        horizontal = bool(bar_dir is not None and bar_dir.get('val') == 'bar')
+        return _svg_bar(cats, vals, horizontal)
+    if kind == 'pieChart':
+        return _svg_ring(cats, vals, hole=0.0)
+    if kind == 'doughnutChart':
+        return _svg_ring(cats, vals, hole=0.55)
+    return ''
+
+
+
 
 # ------------------------------------------------------------------ docx
 
@@ -245,8 +440,10 @@ def xlsx_to_html(path, max_rows=200, max_cols=20):
 # ------------------------------------------------------------------ pptx
 
 def pptx_to_html(path):
-    """按幻灯片顺序遍历，文字和图片按原始先后输出"""
+    """按幻灯片顺序遍历，文字、图片、原生图表按原始先后输出"""
     media = []
+    chart_total = 0
+    chart_ok = 0
     with zipfile.ZipFile(path) as z:
         slides = sorted(
             [n for n in z.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)],
@@ -266,10 +463,23 @@ def pptx_to_html(path):
                     img = media_ref(el, rels, media)
                     if img:
                         rows.append('<p class="doc-fig">%s</p>' % img)
+                elif el.tag.endswith('}chart'):
+                    # 原生图表对象：图里没有像素，只能按数据重画成 SVG
+                    chart_total += 1
+                    rid = el.get(LINK_ID)
+                    svg = chart_svg(z, rels.get(rid) if rid else None)
+                    if svg:
+                        chart_ok += 1
+                        rows.append('<p class="doc-fig">%s</p>' % svg)
             if not rows:
                 continue
             out.append('<h2>第 %d 页</h2>' % i)
             out.extend(rows)
+
+    if chart_total:
+        print('  [图表] 共 %d 个，已渲染 %d 个%s'
+              % (chart_total, chart_ok,
+                 '，其余类型暂不支持' if chart_ok < chart_total else ''))
     return '\n'.join(out), media
 
 
