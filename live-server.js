@@ -779,7 +779,11 @@ function proxyStream(target, req, res, refOverride) {
     if (isVod && !out['accept-ranges']) out['accept-ranges'] = 'bytes';
 
     out['access-control-allow-origin'] = '*';
-    out['cache-control'] = isVod ? 'max-age=3600' : 'no-cache';
+    // 隐私：视频分片一律禁止落盘缓存。原先点播给了 max-age=3600，
+    // 会把 ts/mp4 写进浏览器磁盘缓存躺一小时，这里全部改成 no-store。
+    out['cache-control'] = 'no-store, no-cache, must-revalidate';
+    out['pragma'] = 'no-cache';
+    delete out['expires'];
 
     let code = pres.statusCode;
     if (code < 200 || code > 599) code = 200;
@@ -798,7 +802,7 @@ function proxyStream(target, req, res, refOverride) {
           const buf = Buffer.from(body, 'utf8');
           delete out['content-length'];
           out['content-length'] = String(buf.length);
-          out['cache-control'] = 'no-cache';
+          out['cache-control'] = 'no-store, no-cache, must-revalidate';
           res.writeHead(code, out);
           res.end(buf);
         } catch (e) {
@@ -839,6 +843,12 @@ function proxyStream(target, req, res, refOverride) {
 function serveStatic(pathname, res) {
   let p = decodeURIComponent(pathname);
   if (p === '/' || p === '') p = '/' + PAGE;
+
+  // 浏览器总会自动请求 favicon，回一个空响应，免得控制台留一条 404 红字
+  if (p === '/favicon.ico') {
+    res.writeHead(204, { 'Cache-Control': 'no-store' });
+    return res.end();
+  }
 
   const full = path.join(ROOT, p);
   const rel = path.relative(ROOT, full);

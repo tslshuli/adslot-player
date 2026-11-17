@@ -1648,6 +1648,19 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   var lastRoom = '';        // 当前源的原始链接，切集后 R 刷新要用
   var autoNext = true;      // 播完自动下一集
 
+  /* ---- 隐私：播放地址只留在会话内存里 ----
+     sessionStorage 存在标签页内存 + 会话恢复区，关掉标签页就没了；
+     localStorage 会写到磁盘 LevelDB，F12 一看就知道最后看了什么，所以不用。 */
+  var ROOM_KEY = 'wbLiveRoom';
+  function rememberRoom(u) { try { sessionStorage.setItem(ROOM_KEY, u); } catch (e) {} }
+  function recallRoom() { try { return sessionStorage.getItem(ROOM_KEY) || ''; } catch (e) { return ''; } }
+  function forgetRoom() {
+    try { sessionStorage.removeItem(ROOM_KEY); } catch (e) {}
+    try { localStorage.removeItem(ROOM_KEY); } catch (e) {}  // 清掉历史版本留下的磁盘痕迹
+  }
+  // 旧版本把播放地址存在 localStorage 里（会落盘），启动时先抹掉一次
+  try { localStorage.removeItem(ROOM_KEY); } catch (e) {}
+
   var slots = Array.prototype.slice.call(rail.querySelectorAll('.ad-slot'));
 
   var BASE_W = 280;
@@ -1937,7 +1950,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     liveReferer = '';
     playLive(eps[idx].url);
     toast('《' + name + '》' + (eps[idx].title || '') + ' · 共 ' + eps.length + ' 集');
-    try { localStorage.setItem('wbLiveRoom', eps[idx].url); } catch (e) {}
+    rememberRoom(eps[idx].url);
   }
 
   searchGo.addEventListener('click', doSearch);
@@ -1965,7 +1978,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         liveReferer = '';
         episodes = []; epIndex = 0; updateEpBadge();
         playLive(raw);
-        try { localStorage.setItem('wbLiveRoom', raw); } catch (e) {}
+        rememberRoom(raw);
       } else if (/douyin\.com|bilibili\.com|b23\.tv/i.test(raw)) {
         setLiveMsg('正在取流…');
         var resp = await fetch('/resolve?u=' + encodeURIComponent(raw));
@@ -1985,7 +1998,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         if (episodes.length > 1) {
           toast('共 ' + episodes.length + ' 集 · 播完自动续 · . 切下一集');
         }
-        try { localStorage.setItem('wbLiveRoom', raw); } catch (e) {}
+        rememberRoom(raw);
       } else if (/^https?:\/\//i.test(raw)) {
         // 普通网页 —— 抓正文当文档
         setLiveMsg('正在抓取网页正文…');
@@ -2019,8 +2032,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   async function refreshLive() {
     if (location.protocol === 'file:') { toast('要先启动本地服务'); return; }
 
-    var room = '';
-    try { room = localStorage.getItem('wbLiveRoom') || ''; } catch (e) {}
+    var room = recallRoom();
 
     if (!room) { toast('还没有记录直播间'); return; }
 
@@ -2332,6 +2344,43 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     applyScale();
   }
 
+  /* ---------- 一键清除播放痕迹 ---------- */
+  async function wipeTraces() {
+    // 1. 停播、拆解码器、释放 video 元素（把已缓冲的媒体数据一起丢掉）
+    try {
+      if (hlsPlayer) { try { hlsPlayer.destroy(); } catch (e) {} hlsPlayer = null; }
+      if (flvPlayer) { try { flvPlayer.destroy(); } catch (e) {} flvPlayer = null; }
+      try { vid.pause(); } catch (e) {}
+      vid.removeAttribute('src');
+      try { vid.load(); } catch (e) {}
+      if (objectUrl) { try { URL.revokeObjectURL(objectUrl); } catch (e) {} objectUrl = null; }
+    } catch (e) {}
+
+    // 2. 清内存里的源和分集
+    episodes = []; epIndex = 0;
+    lastRoom = ''; liveReferer = ''; lastFetched = null;
+    liveMode = false;
+    try { updateEpBadge(); } catch (e) {}
+    if (empty) empty.classList.remove('hide');
+
+    // 3. 清存储（会话级 + 历史版本可能残留的磁盘记录）
+    forgetRoom();
+    try { sessionStorage.clear(); } catch (e) {}
+
+    // 4. 清 Cache Storage（Service Worker 缓存，浏览器支持才清）
+    try {
+      if (window.caches && caches.keys) {
+        var keys = await caches.keys();
+        await Promise.all(keys.map(function (k) { return caches.delete(k); }));
+      }
+    } catch (e) {}
+
+    // 5. 正文回到默认那篇，别停在抓来的内容上
+    try { if (DOCS && DOCS.length) await renderDoc(0); } catch (e) {}
+
+    toast('已清除播放痕迹');
+  }
+
   /* ---------- 快捷键 ---------- */
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
@@ -2410,6 +2459,10 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       case 'r':
       case 'R':
         refreshLive();
+        break;
+      case 'c':                         // 一键清除播放痕迹
+      case 'C':
+        wipeTraces();
         break;
       case 'n':
       case 'N':
