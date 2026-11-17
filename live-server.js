@@ -23,6 +23,11 @@ const PAGE = '伪装播放器.html';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
            '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
+// TVBox 配置源：只取 type=1 的 JSON CMS 站点（能直接按 ?wd= 搜索）
+const TVBOX_CONFIG = 'https://8899-agqwhgsg5mulbeqpyjhjxw4azm.instabox.tech/tvbox.json';
+let tvboxSites = null;          // 缓存站点列表
+let tvboxSitesAt = 0;
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -615,6 +620,94 @@ async function resolveGqc(pageUrl, opt) {
   };
 }
 
+/* --------------------------------------------- TVBox 资源搜索 */
+
+// 拉配置并缓存 type=1 的 JSON CMS 站点
+async function loadTvboxSites() {
+  if (tvboxSites && Date.now() - tvboxSitesAt < 3600 * 1000) return tvboxSites;
+  const r = await get(TVBOX_CONFIG, { 'User-Agent': UA }, 4, 12000);
+  const cfg = JSON.parse(r.body);
+  tvboxSites = (cfg.sites || []).filter((s) => s.type === 1 && s.api && s.searchable !== 0);
+  tvboxSitesAt = Date.now();
+  return tvboxSites;
+}
+
+// 单站点搜索：CMS 的 ?wd= 接口
+async function tvboxSearchOne(site, wd) {
+  const sep = site.api.indexOf('?') > -1 ? '&' : '?';
+  const url = site.api + sep + 'wd=' + encodeURIComponent(wd);
+  const r = await get(url, { 'User-Agent': UA, 'Referer': 'https://' }, 3, 9000);
+  const j = JSON.parse(r.body);
+  const list = Array.isArray(j.list) ? j.list : [];
+  return list.map((v) => ({
+    key: site.key,
+    site: String(site.name || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9 ]/g, '').trim().slice(0, 12),
+    id: String(v.vod_id),
+    name: String(v.vod_name || '').slice(0, 60),
+    type: String(v.type_name || ''),
+    year: String(v.vod_year || ''),
+    remarks: String(v.vod_remarks || '').slice(0, 20),
+    pic: String(v.vod_pic || '')
+  }));
+}
+
+// 搜全部站点，并发 + 超时保护，按名字+年份去重
+async function tvboxSearch(wd) {
+  const sites = await loadTvboxSites();
+  const results = await Promise.all(sites.map((s) => tvboxSearchOne(s, wd).catch(() => [])));
+  const seen = new Set();
+  const merged = [];
+  for (const group of results) {
+    for (const v of group) {
+      const k = v.name + '|' + v.year;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      merged.push(v);
+    }
+  }
+  return { sites: sites.length, list: merged.slice(0, 60) };
+}
+
+// 解析 vod_play_url：格式 "第01集$url#第02集$url#..."
+// 多个播放源用 $$$ 分隔：vod_play_from = "源A$$$源B"
+function parseVodPlayUrl(playFrom, playUrl) {
+  const froms = String(playFrom || '').split('$$$').filter(Boolean);
+  const blocks = String(playUrl || '').split('$$$');
+  const bi = 0; // 默认取第一条播放源
+  const lines = (blocks[bi] || '').split('#').filter(Boolean);
+  const eps = [];
+  for (const line of lines) {
+    const at = line.indexOf('$');
+    if (at < 0) continue;
+    const title = line.slice(0, at).trim();
+    const url = line.slice(at + 1).trim();
+    if (!/^https?:\/\//i.test(url)) continue;
+    eps.push({ title: title.slice(0, 30), url: url });
+  }
+  return { source: froms[bi] || '默认', episodes: eps };
+}
+
+// 详情：拿分集列表
+async function tvboxDetail(key, id) {
+  const sites = await loadTvboxSites();
+  const site = sites.find((s) => s.key === key);
+  if (!site) throw new Error('站点不存在：' + key);
+  const sep = site.api.indexOf('?') > -1 ? '&' : '?';
+  const url = site.api + sep + 'ac=detail&ids=' + encodeURIComponent(id)
+            + '&wd=' + encodeURIComponent('');
+  const r = await get(url, { 'User-Agent': UA, 'Referer': 'https://' }, 3, 10000);
+  const j = JSON.parse(r.body);
+  const v = (j.list || [])[0];
+  if (!v) throw new Error('没找到这部剧的详情');
+  const parsed = parseVodPlayUrl(v.vod_play_from, v.vod_play_url);
+  return {
+    name: String(v.vod_name || '').slice(0, 60),
+    site: key,
+    source: parsed.source,
+    episodes: parsed.episodes
+  };
+}
+
 /* --------------------------------------------- 按域名选 Referer */
 
 function refererFor(target) {
@@ -625,6 +718,40 @@ function refererFor(target) {
 }
 
 /* ------------------------------------------------------------ 流转发 */
+
+// 改写 m3u8：把相对路径的 key / 分片改成走本地代理的绝对地址，
+// 否则 hls.js 会把 enc.key 解析到 127.0.0.1 根目录导致 404
+function rewriteM3u8(body, baseUrl, ref) {
+  let text = String(body);
+  let base;
+  try { base = new URL(baseUrl); } catch (e) { return text; }
+
+  const proxify = (raw) => {
+    const u = new URL(raw, baseUrl).href;
+    let p = '/proxy?u=' + encodeURIComponent(u);
+    if (ref) p += '&r=' + encodeURIComponent(ref);
+    return p;
+  };
+
+  // #EXT-X-KEY 的 URI="..."（相对或绝对都统一走代理）
+  text = text.replace(/URI="([^"]+)"/g, (m, uri) => {
+    if (/^data:/i.test(uri)) return m;
+    return 'URI="' + proxify(uri) + '"';
+  });
+
+  // 分片行 / 子播放列表行：非 # 开头、非绝对 URL、非空
+  text = text.split('\n').map(function (line) {
+    const t = line.trim();
+    if (!t || t.charAt(0) === '#') return line;
+    if (/^https?:\/\//i.test(t)) {
+      // 绝对地址也走代理，避免浏览器直连被防盗链拦
+      return proxify(t);
+    }
+    return proxify(t);
+  }).join('\n');
+
+  return text;
+}
 
 function proxyStream(target, req, res, refOverride) {
   let tu;
@@ -687,6 +814,31 @@ function proxyStream(target, req, res, refOverride) {
 
     let code = pres.statusCode;
     if (code < 200 || code > 599) code = 200;
+
+    // m3u8 需要改写相对路径（key/分片），收集后重写再发
+    const isM3u8 = /\.m3u8(\?|$)/i.test(target) || /mpegurl/i.test(ctype);
+    if (isM3u8) {
+      const chunks = [];
+      pres.on('data', (c) => chunks.push(c));
+      pres.on('error', () => { try { res.end(); } catch (_) {} });
+      pres.on('aborted', () => { try { res.end(); } catch (_) {} });
+      pres.on('end', () => {
+        try {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          const body = rewriteM3u8(raw, target, ref);
+          const buf = Buffer.from(body, 'utf8');
+          delete out['content-length'];
+          out['content-length'] = String(buf.length);
+          out['cache-control'] = 'no-cache';
+          res.writeHead(code, out);
+          res.end(buf);
+        } catch (e) {
+          try { res.end(); } catch (_) {}
+        }
+      });
+      res.on('close', () => { try { pres.destroy(); } catch (_) {} });
+      return;
+    }
 
     res.writeHead(code, out);
 
@@ -866,6 +1018,32 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: false, error: e.message }));
       }
     });
+    return;
+  }
+
+  if (u.pathname === '/tvbox') {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    const action = u.searchParams.get('action') || 'search';
+    try {
+      if (action === 'search') {
+        const wd = String(u.searchParams.get('wd') || '').trim();
+        if (!wd) throw new Error('请输入片名');
+        const out = await tvboxSearch(wd);
+        res.writeHead(200);
+        res.end(JSON.stringify({ ok: true, wd: wd, sites: out.sites, list: out.list }));
+      } else if (action === 'detail') {
+        const key = u.searchParams.get('key') || '';
+        const id = u.searchParams.get('id') || '';
+        const out = await tvboxDetail(key, id);
+        res.writeHead(200);
+        res.end(JSON.stringify({ ok: true, name: out.name, site: out.site, source: out.source, episodes: out.episodes }));
+      } else {
+        throw new Error('未知操作');
+      }
+    } catch (e) {
+      res.writeHead(200);
+      res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
     return;
   }
 
