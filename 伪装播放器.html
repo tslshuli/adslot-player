@@ -1737,7 +1737,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         episodes = []; epIndex = 0; updateEpBadge();
         playLive(raw);
         try { localStorage.setItem('wbLiveRoom', raw); } catch (e) {}
-      } else if (/douyin\.com|bilibili\.com|b23\.tv/i.test(raw)) {
+      } else if (/douyin\.com|bilibili\.com|b23\.tv|gqc\.ink/i.test(raw)) {
         setLiveMsg('正在取流…');
         var resp = await fetch('/resolve?u=' + encodeURIComponent(raw));
         var data = await resp.json();
@@ -1823,13 +1823,20 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   }
 
   /* 多集时带上当前 bvid/cid，避免 R 刷新跳回第一集 */
-  function resolveCurrent(room) {
-    var u = '/resolve?u=' + encodeURIComponent(room);
-    if (episodes.length > 1 && episodes[epIndex]) {
-      u += '&bvid=' + encodeURIComponent(episodes[epIndex].bvid)
-        + '&cid=' + encodeURIComponent(episodes[epIndex].cid);
+  /* 按剧集类型构造 resolve 请求：
+     gqc 用 page（每集一个页面 URL），B站用 bvid+cid */
+  function resolveFor(ep, fallbackRoom) {
+    var u = '/resolve?u=' + encodeURIComponent((ep && ep.page) || fallbackRoom || (ep && ep.bvid) || '');
+    if (ep && ep.bvid && ep.cid) {
+      u += '&bvid=' + encodeURIComponent(ep.bvid)
+        + '&cid=' + encodeURIComponent(ep.cid);
     }
     return fetch(u);
+  }
+
+  function resolveCurrent(room) {
+    var ep = episodes.length > 1 ? episodes[epIndex] : null;
+    return resolveFor(ep, room);
   }
 
   /* 切到指定集：idx 超出范围时停住并提示 */
@@ -1842,10 +1849,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     var ep = episodes[idx];
     setLiveMsg('正在加载第 ' + (idx + 1) + ' 集…');
     try {
-      var u = '/resolve?u=' + encodeURIComponent(lastRoom || ep.bvid)
-        + '&bvid=' + encodeURIComponent(ep.bvid)
-        + '&cid=' + encodeURIComponent(ep.cid);
-      var resp = await fetch(u);
+      var resp = await resolveFor(ep, lastRoom);
       var data = await resp.json();
       if (!data.ok) throw new Error(data.error || '取流失败');
       liveReferer = data.referer || '';

@@ -39,8 +39,9 @@ const MIME = {
 
 /* ---------------------------------------------------------------- 工具 */
 
-function get(targetUrl, headers, redirectsLeft) {
+function get(targetUrl, headers, redirectsLeft, timeoutMs) {
   redirectsLeft = redirectsLeft === undefined ? 4 : redirectsLeft;
+  timeoutMs = timeoutMs || 15000;
 
   return new Promise((resolve, reject) => {
     let u;
@@ -62,7 +63,7 @@ function get(targetUrl, headers, redirectsLeft) {
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
         res.resume();
         const next = new URL(res.headers.location, targetUrl).href;
-        return resolve(get(next, headers, redirectsLeft - 1));
+        return resolve(get(next, headers, redirectsLeft - 1, timeoutMs));
       }
 
       const chunks = [];
@@ -78,7 +79,7 @@ function get(targetUrl, headers, redirectsLeft) {
     });
 
     req.on('error', reject);
-    req.setTimeout(15000, () => req.destroy(new Error('请求超时')));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('请求超时')));
     req.end();
   });
 }
@@ -531,6 +532,89 @@ async function resolveBilibiliVideo(videoUrl, opt) {
   };
 }
 
+/* --------------------------------------------- gqc.ink 影视剧集 */
+
+// 播放页形如 /bofang/359322-7-1.html：359322=剧ID, 7=线路, 1=集数
+// 页面里有 data-play（当前集 m3u8）和同线路的「第NN集」选集列表
+async function resolveGqc(pageUrl, opt) {
+  opt = opt || {};
+
+  // 这个站偶发超时，失败就重试一次
+  let body = '';
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await get(pageUrl, {
+        Referer: 'https://gqc.ink/',
+        'Accept-Language': 'zh-CN,zh;q=0.9'
+      }, 4, 10000);
+      body = String(r.body || '');
+      if (/data-play="[^"]+\.m3u8/i.test(body)) break;
+    } catch (e) { lastErr = e; }
+  }
+  if (!/data-play="[^"]+\.m3u8/i.test(body)) {
+    throw new Error('取播放页失败：' + (lastErr && lastErr.message || '页面无播放地址，稍后重试'));
+  }
+
+  // 当前页的 m3u8
+  const playM = body.match(/data-play="([^"]+\.m3u8[^"]*)"/i);
+  if (!playM) {
+    throw new Error('这个页面没找到播放地址（可能要登录或线路失效）');
+  }
+  const m3u8 = playM[1].replace(/&amp;/g, '&');
+
+  // 当前页的剧名 / 集数 / 线路
+  const titleRaw = (body.match(/<title>([^<]*)<\/title>/i) || [])[1] || '';
+  const showTitle = titleRaw.replace(/(第\s*\d+\s*集).*$/, '')
+                            .replace(/(在线电影|在线播放下载|_.*| - .*)$/, '')
+                            .trim() || '在线视频';
+  const pageM = String(pageUrl).match(/\/bofang\/(\d+)-(\d+)-(\d+)\.html/i);
+  if (!pageM) throw new Error('链接格式不对，应该是 .../bofang/数字-线路-集数.html');
+  const showId = pageM[1];
+  const line = pageM[2];
+  const curEp = parseInt(pageM[3], 10) || 1;
+
+  // 同线路的全部选集：href="/bofang/359322-7-N.html" + 文案「第NN集」
+  const seen = new Set();
+  const episodes = [];
+  const re = new RegExp('/bofang/' + showId + '-' + line + '-(\\d+)\\.html["\'][^>]*>([^<]{1,12})', 'gi');
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    const epNo = parseInt(m[1], 10);
+    const label = String(m[2] || '').trim();
+    // 只认「第N集」这种选集链接，排除其它文字链接
+    if (!/^第\s*\d+\s*集$/.test(label)) continue;
+    if (seen.has(epNo)) continue;
+    seen.add(epNo);
+    episodes.push({
+      page: 'https://gqc.ink/bofang/' + showId + '-' + line + '-' + epNo + '.html',
+      ep: epNo,
+      title: '第' + epNo + '集'
+    });
+  }
+  episodes.sort((a, b) => a.ep - b.ep);
+
+  // 没抓到选集列表就退回只播当前集
+  if (!episodes.length) {
+    episodes.push({
+      page: pageUrl,
+      ep: curEp,
+      title: '第' + curEp + '集'
+    });
+  }
+
+  let index = episodes.findIndex((e) => e.ep === curEp);
+  if (index < 0) index = 0;
+
+  return {
+    title: showTitle.slice(0, 40),
+    m3u8: [m3u8],
+    referer: 'https://gqc.ink/',
+    episodes: episodes,
+    index: index
+  };
+}
+
 /* --------------------------------------------- 按域名选 Referer */
 
 function refererFor(target) {
@@ -812,6 +896,8 @@ const server = http.createServer(async (req, res) => {
         });
       } else if (/douyin\.com/i.test(room)) {
         r = await resolveStream(room);
+      } else if (/gqc\.ink/i.test(room)) {
+        r = await resolveGqc(room, { ep: u.searchParams.get('ep') || '' });
       } else {
         throw new Error('暂不支持这个站点，可以直接粘贴 .flv / .m3u8 / .mp4 直链');
       }
