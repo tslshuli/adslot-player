@@ -6,6 +6,9 @@
 不支持：.doc / .xls / .ppt（老二进制格式）、.pdf
         —— 用 Office 另存为 docx/xlsx/pptx 再导入即可。
 
+docx / pptx 里的内嵌图片会一起导出到 docs/img/<文档名>/，
+HTML 里用 /docs/img/... 绝对路径引用。
+
 用法：
     python tools/import-doc.py 文件1.docx 文件2.xlsx
     或把文件直接拖到「导入文档.bat」上
@@ -13,6 +16,7 @@
 
 import html
 import os
+import posixpath
 import re
 import sys
 import zipfile
@@ -23,9 +27,60 @@ DOCS = os.path.join(ROOT, 'docs')
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
+# Office 包里图片用 r:embed 指向 rels 里的目标，命名空间固定
+NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+EMBED = '{%s}embed' % NS_R
+LINK_ID = '{%s}id' % NS_R
+
+# 图片在 HTML 里先写占位符，等知道输出文件名再统一替换成真实路径
+PH = '%%IMG:%s%%'
+
+# 浏览器能直接显示的图片格式。Office 里的图表常被存成 emf/wmf/tiff，
+# 这些浏览器认不了，导出来只会是裂图，所以要识别出来并提示。
+WEB_IMG = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'}
+
 
 def q(tag):
     return '{%s}%s' % (W, tag)
+
+
+# ------------------------------------------------------------------ 媒体
+
+def read_rels(z, rels_path):
+    """读 xx.rels，返回 {rId: 包内绝对路径}（跳过外链）"""
+    m = {}
+    if rels_path not in z.namelist():
+        return m
+    base = posixpath.dirname(posixpath.dirname(rels_path))
+    try:
+        root = ET.fromstring(z.read(rels_path))
+    except ET.ParseError:
+        return m
+    for rel in root:
+        rid = rel.get('Id')
+        target = rel.get('Target') or ''
+        if not rid or not target or rel.get('TargetMode') == 'External':
+            continue
+        if target.startswith('/'):
+            full = target.lstrip('/')
+        else:
+            full = posixpath.normpath(posixpath.join(base, target))
+        m[rid] = full
+    return m
+
+
+def media_ref(el, rels, media, tag='img'):
+    """把 a:blip / v:imagedata 变成一个 <img>，同时登记图片"""
+    rid = el.get(EMBED) or el.get(LINK_ID)
+    if not rid:
+        return ''
+    target = rels.get(rid)
+    if not target:
+        return ''
+    if target not in media:
+        media.append(target)
+    return '<img src="%s" alt="">' % (PH % target)
+
 
 
 # ------------------------------------------------------------------ docx
@@ -34,10 +89,25 @@ def para_text(p):
     return ''.join(t.text or '' for t in p.iter(q('t')))
 
 
-def para_html(p):
+def para_html(p, rels, media):
+    """一个段落可能既有图又有字：先出图，再出字"""
+    figs = []
+    for el in p.iter():
+        if el.tag.endswith('}blip') or el.tag.endswith('}imagedata'):
+            img = media_ref(el, rels, media)
+            if img:
+                figs.append(img)
+
     txt = para_text(p).strip()
-    if not txt:
+    if not txt and not figs:
         return ''
+
+    out = []
+    if figs:
+        out.append('<p class="doc-fig">%s</p>' % ''.join(figs))
+    if not txt:
+        return '\n'.join(out)
+
     style = ''
     ppr = p.find(q('pPr'))
     if ppr is not None:
@@ -50,10 +120,12 @@ def para_html(p):
     if m:
         lvl = int(m.group(1))
         tag = 'h2' if lvl <= 1 else 'h3'
-        return '<%s>%s</%s>' % (tag, html.escape(txt), tag)
-    if low.startswith('title'):
-        return '<h2>%s</h2>' % html.escape(txt)
-    return '<p>%s</p>' % html.escape(txt)
+        out.append('<%s>%s</%s>' % (tag, html.escape(txt), tag))
+    elif low.startswith('title'):
+        out.append('<h2>%s</h2>' % html.escape(txt))
+    else:
+        out.append('<p>%s</p>' % html.escape(txt))
+    return '\n'.join(out)
 
 
 def table_html(tbl):
@@ -79,24 +151,26 @@ def table_html(tbl):
 
 
 def docx_to_html(path):
+    media = []
     with zipfile.ZipFile(path) as z:
         root = ET.fromstring(z.read('word/document.xml'))
+        rels = read_rels(z, 'word/_rels/document.xml.rels')
 
     body = root.find(q('body'))
     if body is None:
-        return ''
+        return '', media
 
     out = []
     for el in body:
         if el.tag == q('p'):
-            h = para_html(el)
+            h = para_html(el, rels, media)
             if h:
                 out.append(h)
         elif el.tag == q('tbl'):
             h = table_html(el)
             if h:
                 out.append(h)
-    return '\n'.join(out)
+    return '\n'.join(out), media
 
 
 # ------------------------------------------------------------------ xlsx
@@ -171,6 +245,8 @@ def xlsx_to_html(path, max_rows=200, max_cols=20):
 # ------------------------------------------------------------------ pptx
 
 def pptx_to_html(path):
+    """按幻灯片顺序遍历，文字和图片按原始先后输出"""
+    media = []
     with zipfile.ZipFile(path) as z:
         slides = sorted(
             [n for n in z.namelist() if re.match(r'ppt/slides/slide\d+\.xml$', n)],
@@ -178,15 +254,23 @@ def pptx_to_html(path):
         )
         out = []
         for i, s in enumerate(slides, 1):
+            rels = read_rels(z, 'ppt/slides/_rels/%s.rels' % posixpath.basename(s))
             root = ET.fromstring(z.read(s))
-            texts = [t.text.strip() for t in root.iter()
-                     if t.tag.endswith('}t') and t.text and t.text.strip()]
-            if not texts:
+            rows = []
+            for el in root.iter():
+                if el.tag.endswith('}t'):
+                    t = (el.text or '').strip()
+                    if t:
+                        rows.append('<p>%s</p>' % html.escape(t))
+                elif el.tag.endswith('}blip') or el.tag.endswith('}imagedata'):
+                    img = media_ref(el, rels, media)
+                    if img:
+                        rows.append('<p class="doc-fig">%s</p>' % img)
+            if not rows:
                 continue
             out.append('<h2>第 %d 页</h2>' % i)
-            for t in texts:
-                out.append('<p>%s</p>' % html.escape(t))
-        return '\n'.join(out)
+            out.extend(rows)
+    return '\n'.join(out), media
 
 
 # ------------------------------------------------------------------ 主流程
@@ -209,14 +293,48 @@ def safe_name(name):
 
 
 def convert(path):
+    """返回 (html, media)；media 是包里要一起导出的图片路径列表"""
     ext = os.path.splitext(path)[1].lower()
     if ext == '.docx':
         return docx_to_html(path)
     if ext == '.xlsx':
-        return xlsx_to_html(path)
+        return xlsx_to_html(path), []
     if ext == '.pptx':
         return pptx_to_html(path)
     raise ValueError('不支持的格式：%s' % ext)
+
+
+def export_media(zip_path, media, doc_stem, body):
+    """把字节里的图片复制到 docs/img/<doc_stem>/，并把占位符换成真实 URL
+    返回 (body, 导出数量, 跳过的扩展名集合)"""
+    if not media:
+        return body, 0, set()
+
+    img_dir = os.path.join(DOCS, 'img', doc_stem)
+    os.makedirs(img_dir, exist_ok=True)
+    count = 0
+    skipped = set()
+    with zipfile.ZipFile(zip_path) as z:
+        for i, mp in enumerate(media, 1):
+            ext = posixpath.splitext(mp)[1].lower()
+            if ext not in WEB_IMG:
+                skipped.add(ext or '(无扩展名)')
+                continue
+            try:
+                data = z.read(mp)
+            except KeyError:
+                continue
+            name = 'img%02d%s' % (i, ext)
+            with open(os.path.join(img_dir, name), 'wb') as f:
+                f.write(data)
+            body = body.replace(PH % mp, '/docs/img/%s/%s' % (doc_stem, name))
+            count += 1
+
+    # 没导出的图（emf/wmf 之类）会留占位符或空 src，收拾干净
+    body = re.sub(r'%IMG:[^%]+%', '', body)
+    body = re.sub(r'<img src="" alt="">', '', body)
+    body = re.sub(r'<p class="doc-fig">\s*</p>', '', body)
+    return body, count, skipped
 
 
 def main():
@@ -246,7 +364,7 @@ def main():
             continue
 
         try:
-            body = convert(path)
+            body, media = convert(path)
         except Exception as e:
             print('[失败] %s —— %s' % (os.path.basename(path), e))
             fail += 1
@@ -259,12 +377,24 @@ def main():
 
         idx = next_index()
         title = safe_name(os.path.splitext(os.path.basename(path))[0])
-        out = os.path.join(DOCS, '%02d-%s.html' % (idx, title))
+        doc_stem = '%02d-%s' % (idx, title)
+
+        try:
+            body, n_img, skipped = export_media(path, media, doc_stem, body)
+        except Exception as e:
+            print('[警告] 图片导出失败：%s' % e)
+            n_img, skipped = 0, set()
+
+        out = os.path.join(DOCS, doc_stem + '.html')
         with open(out, 'w', encoding='utf-8') as f:
             f.write(body)
 
-        print('[完成] %s -> docs/%02d-%s.html（%d 字符）'
-              % (os.path.basename(path), idx, title, len(body)))
+        extra = ('，含 %d 张图片' % n_img) if n_img else ''
+        print('[完成] %s -> docs/%s.html（%d 字符%s）'
+              % (os.path.basename(path), doc_stem, len(body), extra))
+        if skipped:
+            print('  [提示] 另有 %d 张图是 %s 格式，浏览器显示不了，已跳过'
+                  % (len(skipped), '、'.join(sorted(skipped))))
         ok += 1
 
     print()

@@ -136,6 +136,24 @@
     color: #2a3441;
     text-align: left;
   }
+  /* 导入的 Office 文档里的插图：限宽，别把正文栏撑破 */
+  .article img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 14px auto;
+    border: 1px solid #e4e7ec;
+    border-radius: 4px;
+    background: #fff;
+  }
+  .article .doc-fig {
+    text-align: center;
+    margin: 14px 0;
+  }
+  .article .doc-fig img {
+    display: inline-block;
+    margin: 0;
+  }
   .article pre code {
     background: none;
     padding: 0;
