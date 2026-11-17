@@ -1854,10 +1854,11 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     }
     var html = '';
     list.forEach(function (v, i) {
+      var n = (v.sites && v.sites.length) || 1;
       html += '<div class="sp-item" data-i="' + i + '">'
         + '<span class="sp-name">' + esc(v.name) + '</span>'
         + '<span class="sp-meta">' + esc(v.type || '') + (v.year ? ' · ' + esc(v.year) : '')
-        + (v.remarks ? ' · ' + esc(v.remarks) : '') + '</span>'
+        + (v.remarks ? ' · ' + esc(v.remarks) : '') + (n > 1 ? ' · ' + n + '个源' : '') + '</span>'
         + '</div>';
     });
     searchResult.innerHTML = html;
@@ -1866,20 +1867,38 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     });
   }
 
+  // 同一部剧可能有多个来源，逐个试：优先用「全是视频直链」的源，
+  // 遇到 /share/ 网页页就换下一个源
   async function loadSearchDetail(v) {
-    setSearchMsg('正在获取《' + v.name + '》的分集…');
+    var sources = (v.sites && v.sites.length) ? v.sites : [{ key: v.key, site: v.site, id: v.id }];
+    setSearchMsg('正在获取《' + v.name + '》的分集（' + sources.length + ' 个源）…');
     searchResult.innerHTML = '<div class="sp-empty">加载中…</div>';
-    try {
-      var resp = await fetch('/tvbox?action=detail&key=' + encodeURIComponent(v.key)
-        + '&id=' + encodeURIComponent(v.id));
-      var data = await resp.json();
-      if (!data.ok) throw new Error(data.error || '获取失败');
-      showEpisodes(data, v);
-      setSearchMsg('《' + data.name + '》共 ' + (data.episodes || []).length + ' 集 · 来源：' + v.site, 'ok');
-    } catch (e) {
-      searchResult.innerHTML = '<div class="sp-empty">获取失败：' + esc(e.message) + '</div>';
-      setSearchMsg(e.message || '出错了', 'err');
+
+    var tried = [];
+    for (var i = 0; i < sources.length; i++) {
+      var s = sources[i];
+      try {
+        var resp = await fetch('/tvbox?action=detail&key=' + encodeURIComponent(s.key)
+          + '&id=' + encodeURIComponent(s.id));
+        var data = await resp.json();
+        if (!data.ok) { tried.push(s.site); continue; }
+        var eps = data.episodes || [];
+        if (!eps.length) { tried.push(s.site); continue; }
+        // 全是网页播放页 → 不可播，换下一个源
+        var allPage = eps.every(function (e) { return e.page; });
+        if (allPage) { tried.push(s.site + '(网页页)'); continue; }
+
+        showEpisodes(data, v);
+        setSearchMsg('《' + data.name + '》共 ' + eps.length + ' 集 · 来源：' + s.site, 'ok');
+        return;
+      } catch (e) {
+        tried.push(s.site);
+      }
     }
+    searchResult.innerHTML = '<div class="sp-empty">试了 '
+      + sources.length + ' 个源都拿不到可播放地址<br><span style="font-size:11px;color:#bbb">'
+      + esc(tried.join('、')) + '</span></div>';
+    setSearchMsg('这个资源只有网页播放页，播不了，换别的结果试试', 'err');
   }
 
   function showEpisodes(data, v) {
@@ -1890,14 +1909,18 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     }
     var html = '<span class="sp-back">‹ 返回搜索结果</span><div style="margin-top:6px">';
     eps.forEach(function (ep, i) {
-      html += '<span class="sp-ep" data-i="' + i + '">' + esc(ep.title || ('第' + (i + 1) + '集')) + '</span>';
+      var dim = ep.page ? ' style="opacity:.4"' : '';
+      html += '<span class="sp-ep" data-i="' + i + '"' + dim + '>'
+        + esc(ep.title || ('第' + (i + 1) + '集')) + '</span>';
     });
     html += '</div>';
     searchResult.innerHTML = html;
     searchResult.querySelector('.sp-back').addEventListener('click', doSearch);
     Array.prototype.forEach.call(searchResult.querySelectorAll('.sp-ep'), function (el) {
       el.addEventListener('click', function () {
-        playSearchEpisode(eps, +el.getAttribute('data-i'), data.name);
+        var i = +el.getAttribute('data-i');
+        if (eps[i].page) { toast('这一集只有网页播放页，播不了'); return; }
+        playSearchEpisode(eps, i, data.name);
       });
     });
   }
@@ -1905,7 +1928,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   // 用搜索到的分集列表接进现有连播机制
   function playSearchEpisode(eps, idx, name) {
     episodes = eps.map(function (e) {
-      return { url: e.url, title: e.title, type: 'tvbox' };
+      return { url: e.url, title: e.title, page: e.page, type: 'tvbox' };
     });
     epIndex = idx;
     lastRoom = eps[idx].url;
@@ -2055,6 +2078,10 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     setLiveMsg('正在加载第 ' + (idx + 1) + ' 集…');
     // tvbox 源：每集是现成的 m3u8 直链，直接播，不用再解析
     if (ep.type === 'tvbox' && ep.url) {
+      if (ep.page) {                    // 这一集只有网页播放页，停住
+        toast('第 ' + (idx + 1) + ' 集只有网页播放页，播不了');
+        return;
+      }
       epIndex = idx;
       updateEpBadge();
       liveReferer = '';

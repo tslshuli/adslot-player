@@ -568,40 +568,91 @@ async function tvboxSearchOne(site, wd) {
   }));
 }
 
-// 搜全部站点，并发 + 超时保护，按名字+年份去重
+// 搜全部站点，并发 + 超时保护
+// 关键：有些站点不认 wd 参数，会返回默认热门列表，必须按关键词过滤掉，
+// 否则无关结果会把真正搜到的挤到后面，用户翻不到
 async function tvboxSearch(wd) {
   const sites = await loadTvboxSites();
-  const results = await Promise.all(sites.map((s) => tvboxSearchOne(s, wd).catch(() => [])));
-  const seen = new Set();
-  const merged = [];
-  for (const group of results) {
-    for (const v of group) {
+  const results = await Promise.all(sites.map((s) =>
+    tvboxSearchOne(s, wd).then((list) => ({ ok: true, list })).catch(() => ({ ok: false, list: [] }))
+  ));
+
+  const okSites = results.filter((r) => r.ok).length;
+  const kw = String(wd).replace(/\s+/g, '');
+
+  // 按「名字是否含关键词」过滤 + 打分，不同站点同一部剧合并成一条
+  const byKey = new Map();
+  for (const r of results) {
+    for (const v of r.list) {
+      const nm = v.name.replace(/\s+/g, '');
+      if (nm.indexOf(kw) === -1) continue;   // 名字不含关键词 → 丢弃
+      // 相关度：完全等于 100，以关键词开头 80，包含 60
+      let score = 60;
+      if (nm === kw) score = 100;
+      else if (nm.indexOf(kw) === 0) score = 80;
+
       const k = v.name + '|' + v.year;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      merged.push(v);
+      const cur = byKey.get(k);
+      if (cur) {
+        // 同一部剧，多个站点来源合并，保留分最高的
+        cur.sites.push({ key: v.key, site: v.site, id: v.id });
+        if (score > cur.score) { cur.score = score; cur.name = v.name; cur.key = v.key; cur.site = v.site; cur.id = v.id; }
+      } else {
+        byKey.set(k, { ...v, score: score, sites: [{ key: v.key, site: v.site, id: v.id }] });
+      }
     }
   }
-  return { sites: sites.length, list: merged.slice(0, 60) };
+
+  const merged = Array.from(byKey.values()).sort((a, b) => b.score - a.score);
+  return {
+    sites: sites.length,
+    okSites: okSites,
+    list: merged.slice(0, 60)
+  };
+}
+
+// 判断一个地址是不是「网页播放页」而不是视频直链
+// 有些源给 /share/xxx 这种网页，播放器当视频加载会失败，要优先避开
+function isPageUrl(u) {
+  return /\/share\//i.test(u) || /\/play\//i.test(u) && !/\.(m3u8|mp4|flv)(\?|$)/i.test(u);
 }
 
 // 解析 vod_play_url：格式 "第01集$url#第02集$url#..."
 // 多个播放源用 $$$ 分隔：vod_play_from = "源A$$$源B"
+// 策略：优先选「所有集都是直链」的源；都含网页页时退而取其全集数最多的
 function parseVodPlayUrl(playFrom, playUrl) {
   const froms = String(playFrom || '').split('$$$').filter(Boolean);
   const blocks = String(playUrl || '').split('$$$');
-  const bi = 0; // 默认取第一条播放源
-  const lines = (blocks[bi] || '').split('#').filter(Boolean);
-  const eps = [];
-  for (const line of lines) {
-    const at = line.indexOf('$');
-    if (at < 0) continue;
-    const title = line.slice(0, at).trim();
-    const url = line.slice(at + 1).trim();
-    if (!/^https?:\/\//i.test(url)) continue;
-    eps.push({ title: title.slice(0, 30), url: url });
+
+  function parseBlock(block) {
+    const lines = String(block || '').split('#').filter(Boolean);
+    const eps = [];
+    for (const line of lines) {
+      const at = line.indexOf('$');
+      if (at < 0) continue;
+      const title = line.slice(0, at).trim();
+      const url = line.slice(at + 1).trim();
+      if (!/^https?:\/\//i.test(url)) continue;
+      eps.push({ title: title.slice(0, 30), url: url, page: isPageUrl(url) });
+    }
+    return eps;
   }
-  return { source: froms[bi] || '默认', episodes: eps };
+
+  let best = { bi: 0, eps: [], score: -1 };
+  blocks.forEach((blk, i) => {
+    const eps = parseBlock(blk);
+    if (!eps.length) return;
+    const pageCount = eps.filter((e) => e.page).length;
+    // 全直链 = 1000 分；含网页页则按直链比例扣分；集数多加分
+    const score = (pageCount === 0 ? 1000 : Math.round((1 - pageCount / eps.length) * 500)) + eps.length;
+    if (score > best.score) best = { bi: i, eps: eps, score: score };
+  });
+
+  return {
+    source: froms[best.bi] || '默认',
+    episodes: best.eps,
+    hasPageUrl: best.eps.some((e) => e.page)
+  };
 }
 
 // 详情：拿分集列表
@@ -621,7 +672,8 @@ async function tvboxDetail(key, id) {
     name: String(v.vod_name || '').slice(0, 60),
     site: key,
     source: parsed.source,
-    episodes: parsed.episodes
+    episodes: parsed.episodes,
+    hasPageUrl: !!parsed.hasPageUrl
   };
 }
 
@@ -947,13 +999,13 @@ const server = http.createServer(async (req, res) => {
         if (!wd) throw new Error('请输入片名');
         const out = await tvboxSearch(wd);
         res.writeHead(200);
-        res.end(JSON.stringify({ ok: true, wd: wd, sites: out.sites, list: out.list }));
+        res.end(JSON.stringify({ ok: true, wd: wd, sites: out.sites, okSites: out.okSites, list: out.list }));
       } else if (action === 'detail') {
         const key = u.searchParams.get('key') || '';
         const id = u.searchParams.get('id') || '';
         const out = await tvboxDetail(key, id);
         res.writeHead(200);
-        res.end(JSON.stringify({ ok: true, name: out.name, site: out.site, source: out.source, episodes: out.episodes }));
+        res.end(JSON.stringify({ ok: true, name: out.name, site: out.site, source: out.source, episodes: out.episodes, hasPageUrl: out.hasPageUrl }));
       } else {
         throw new Error('未知操作');
       }
