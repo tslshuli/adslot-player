@@ -2245,22 +2245,22 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 
     var html;
 
-    if (d.file) {
-      if (!d.html) {
-        try {
-          var resp = await fetch('/docs/' + encodeURIComponent(d.file));
-          var text = await resp.text();
-          if (d.type === 'md') {
-            html = window.marked ? window.marked.parse(text) : '<pre>' + esc(text) + '</pre>';
-          } else {
-            html = text;
-          }
-          d.html = html;
-        } catch (e) {
-          html = '<p>文档加载失败：' + esc(d.file) + '</p>';
+    // 已经有 html（抓取的网页/代码文档，或加载过的文件）直接用
+    // 注意：不能只看 d.file —— addDoc 进来的文档 file 为 null 但带 html
+    if (d.html) {
+      html = d.html;
+    } else if (d.file) {
+      try {
+        var resp = await fetch('/docs/' + encodeURIComponent(d.file));
+        var text = await resp.text();
+        if (d.type === 'md') {
+          html = window.marked ? window.marked.parse(text) : '<pre>' + esc(text) + '</pre>';
+        } else {
+          html = text;
         }
-      } else {
-        html = d.html;
+        d.html = html;
+      } catch (e) {
+        html = '<p>文档加载失败：' + esc(d.file) + '</p>';
       }
     } else {
       html = d.tpl ? document.getElementById(d.tpl).innerHTML : firstBodyHtml;

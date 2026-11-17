@@ -235,6 +235,52 @@ async function resolveBilibili(roomUrl) {
 
 /* --------------------------------------------- 网页正文提取 */
 
+/* 纯文本 / 源码文件（.js / .css / .json / .txt / .md 等）：
+   没有 HTML 结构，整段转义后包成代码块，避免被当标签清洗掉 */
+function codeToArticle(text, finalUrl) {
+  let src = String(text);
+  const dbg = { srcLen: src.length, kind: 'code' };
+
+  // 标题：优先取油猴脚本的 @name，否则取 URL 最后一段
+  let title = '';
+  const nm = src.match(/@name\s+([^\r\n]+)/i);
+  if (nm) title = nm[1].trim();
+  if (!title) {
+    try {
+      const last = new URL(finalUrl || '').pathname.split('/').filter(Boolean).pop();
+      title = decodeURIComponent(last || '源码');
+    } catch (e) { title = '源码'; }
+  }
+  if (title.length > 60) title = title.slice(0, 60);
+
+  // 关键：转义 & < > " '，否则代码里的尖括号会被当 HTML 标签吃掉
+  const esc = src.replace(/&/g, '&amp;')
+                 .replace(/</g, '&lt;')
+                 .replace(/>/g, '&gt;')
+                 .replace(/"/g, '&quot;')
+                 .replace(/'/g, '&#39;');
+
+  const html = '<pre><code>' + esc + '</code></pre>';
+  dbg.bodyLen = html.length;
+  return { title, html, debug: dbg };
+}
+
+/* 判断响应是否为纯文本/源码（非 HTML 网页） */
+function isPlainTextContent(ctype, rawBody, finalUrl) {
+  const ct = String(ctype || '').toLowerCase();
+  // 明确的文本/代码类型
+  if (/\b(text\/|application\/(javascript|json|xml|x-sh)|application\/octet-stream)/i.test(ct)) {
+    return !/text\/html/i.test(ct);
+  }
+  // 没有 content-type 时，看内容和扩展名兜底
+  if (!ct) {
+    const ext = String(finalUrl || '').toLowerCase().match(/\.(js|mjs|ts|css|json|txt|md|xml|py|sh|yml|yaml|log)(\?|$)/);
+    if (ext) return true;
+    if (/^\s*(\/\/==UserScript==|<!DOCTYPE html|<html[\s>])/i.test(rawBody) === false && !/[<]/.test(rawBody)) return true;
+  }
+  return false;
+}
+
 /* 结构化提取失败时的兜底：按文本块切分，不依赖标签结构 */
 function textBlocksToHtml(html) {
   let t = String(html)
@@ -667,7 +713,11 @@ const server = http.createServer(async (req, res) => {
       if (/wappass\.baidu\.com|\/captcha\//i.test(r.url || '') || /百度安全验证/.test(r.body)) {
         throw new Error('被百度的安全验证拦了，等十几分钟再试，或者换个来源');
       }
-      const a = extractArticle(r.body);
+      // 纯代码 / 文本文件（如 .user.js）走代码块分支，不套网页正文清洗逻辑
+      const ctype = r.headers && r.headers['content-type'];
+      const a = isPlainTextContent(ctype, r.body, r.url)
+        ? codeToArticle(r.body, r.url)
+        : extractArticle(r.body);
       if (!a.html) {
         res.writeHead(200);
         return res.end(JSON.stringify({
