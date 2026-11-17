@@ -1661,6 +1661,90 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   // 旧版本把播放地址存在 localStorage 里（会落盘），启动时先抹掉一次
   try { localStorage.removeItem(ROOM_KEY); } catch (e) {}
 
+  /* ---- 断点续播 ----
+     这份记录【故意】存 localStorage（会落盘），目的就是关掉浏览器后还能接着看。
+     跟上面会话级的播放地址是两回事：地址关掉就没了，续播记录留着。
+     按 c 一键清除时会把这份一起清掉。 */
+  var RESUME_KEY = 'wbResume';
+  var currentTitle = '';        // 当前在看的剧名 / 标题
+  var pendingSeek = 0;          // 等视频能 seek 了要跳到的秒数
+  var lastResumeSave = 0;       // 节流用
+
+  function resumeSave() {
+    var cur = episodes[epIndex];
+    var url = (cur && cur.url) || lastRoom || '';
+    if (!url) return;
+    var dur = vid && isFinite(vid.duration) ? vid.duration : 0;
+    var t = (dur > 0 && vid.currentTime > 0) ? vid.currentTime : 0;
+    // 什么都没看（刚点开就关）就别留记录了
+    if (t < 3 && !episodes.length) return;
+    var rec = {
+      v: 1,
+      title: currentTitle || '未命名',
+      epIndex: epIndex,
+      total: episodes.length,
+      time: Math.round(t),
+      url: url,
+      room: lastRoom || '',
+      episodes: episodes,
+      ts: Date.now()
+    };
+    try { localStorage.setItem(RESUME_KEY, JSON.stringify(rec)); } catch (e) {}
+  }
+
+  function resumeLoad() {
+    try {
+      var s = localStorage.getItem(RESUME_KEY);
+      if (!s) return null;
+      var r = JSON.parse(s);
+      if (!r || r.v !== 1 || !r.url) return null;
+      if (!r.ts || Date.now() - r.ts > 30 * 86400000) return null;   // 30 天前的就不提示了
+      return r;
+    } catch (e) { return null; }
+  }
+
+  function resumeClear() {
+    try { localStorage.removeItem(RESUME_KEY); } catch (e) {}
+  }
+
+  /* 时长解析出来之前 seek 无效，轮询等就绪再跳 */
+  function seekWhenReady(t) {
+    pendingSeek = t;
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries++;
+      var dur = vid && vid.duration;
+      if (dur && isFinite(dur) && dur > 1) {
+        try { if (t < dur - 1) vid.currentTime = t; } catch (e) {}
+        pendingSeek = 0;
+        clearInterval(timer);
+      } else if (tries > 40) {          // 最多等 20 秒
+        pendingSeek = 0;
+        clearInterval(timer);
+      }
+    }, 500);
+  }
+
+  function resumeApply(rec) {
+    if (!rec || !rec.url) { toast('没有可续播的记录'); return; }
+    episodes = (rec.episodes || []).slice(0);
+    epIndex = rec.epIndex || 0;
+    lastRoom = rec.room || rec.url;
+    currentTitle = rec.title || '';
+    liveReferer = '';
+    updateEpBadge();
+    rememberRoom(rec.url);
+    playLive(rec.url);
+    if (rec.time > 2) seekWhenReady(rec.time);
+    toast('续播《' + currentTitle + '》' + resumeWhere(rec) + fmt(rec.time), 3000);
+  }
+
+  // 提示里用的"第几集"描述
+  function resumeWhere(rec) {
+    if (!rec || !rec.total || rec.total <= 1) return '';
+    return '第 ' + ((rec.epIndex || 0) + 1) + ' 集 / 共 ' + rec.total + ' 集 ';
+  }
+
   var slots = Array.prototype.slice.call(rail.querySelectorAll('.ad-slot'));
 
   var BASE_W = 280;
@@ -1678,11 +1762,11 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 
   /* ---------- 轻提示 ---------- */
   var toastTimer = null;
-  function toast(msg) {
+  function toast(msg, ms) {
     toastEl.textContent = msg;
     toastEl.classList.add('on');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { toastEl.classList.remove('on'); }, 1300);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('on'); }, ms || 1300);
   }
 
   /* ---------- 离开页面：只隐藏，不暂停 ---------- */
@@ -1956,12 +2040,14 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     });
     epIndex = idx;
     lastRoom = eps[idx].url;
+    currentTitle = name || '';
     updateEpBadge();
     closeSearchPanel();
     liveReferer = '';
     playLive(eps[idx].url);
     toast('《' + name + '》' + (eps[idx].title || '') + ' · 共 ' + eps.length + ' 集');
     rememberRoom(eps[idx].url);
+    resumeSave();
   }
 
   searchGo.addEventListener('click', doSearch);
@@ -1988,8 +2074,10 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         setLiveMsg('直链，正在连接…');
         liveReferer = '';
         episodes = []; epIndex = 0; updateEpBadge();
+        currentTitle = String(raw).replace(/^https?:\/\//, '').split('/')[0];
         playLive(raw);
         rememberRoom(raw);
+        resumeSave();
       } else if (/douyin\.com|bilibili\.com|b23\.tv/i.test(raw)) {
         setLiveMsg('正在取流…');
         var resp = await fetch('/resolve?u=' + encodeURIComponent(raw));
@@ -2002,6 +2090,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         episodes = data.episodes || [];
         epIndex = data.index || 0;
         lastRoom = raw;
+        currentTitle = data.title || 'B站视频';
         updateEpBadge();
 
         setLiveMsg('已取到流，正在连接…', 'ok');
@@ -2010,6 +2099,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
           toast('共 ' + episodes.length + ' 集 · 播完自动续 · . 切下一集');
         }
         rememberRoom(raw);
+        resumeSave();
       } else if (/^https?:\/\//i.test(raw)) {
         // 普通网页 —— 抓正文当文档
         setLiveMsg('正在抓取网页正文…');
@@ -2111,6 +2201,8 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       playLive(ep.url);
       recoverCount = 0;
       toast('第 ' + (idx + 1) + ' / ' + episodes.length + ' 集 · ' + (ep.title || '').slice(0, 14));
+      lastResumeSave = Date.now();
+      resumeSave();
       return;
     }
     try {
@@ -2129,6 +2221,8 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       playLive(src);
       recoverCount = 0;
       toast('第 ' + (epIndex + 1) + ' / ' + episodes.length + ' 集 · ' + (episodes[epIndex].title || '').slice(0, 14));
+      lastResumeSave = Date.now();
+      resumeSave();
     } catch (e) {
       setLiveMsg('切集失败：' + (e.message || '未知错误'), 'err');
     }
@@ -2282,6 +2376,19 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   }
   vid.addEventListener('ended', episodeEnded);
 
+  /* 每 10 秒记一次进度，关页面前再补记一次，避免续播精度太差 */
+  vid.addEventListener('timeupdate', function () {
+    if (!vid.duration || !isFinite(vid.duration)) return;
+    var now = Date.now();
+    if (now - lastResumeSave < 10000) return;
+    lastResumeSave = now;
+    resumeSave();
+  });
+  window.addEventListener('pagehide', resumeSave);
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) resumeSave();
+  });
+
   seek.addEventListener('mousedown', function () { seeking = true; });
   seek.addEventListener('input', function () {
     if (vid.duration) vid.currentTime = seek.value / 1000 * vid.duration;
@@ -2380,12 +2487,14 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     // 2. 清内存里的源和分集
     episodes = []; epIndex = 0;
     lastRoom = ''; liveReferer = ''; lastFetched = null;
+    currentTitle = '';
     liveMode = false;
     try { updateEpBadge(); } catch (e) {}
     if (empty) empty.classList.remove('hide');
 
-    // 3. 清存储（会话级 + 历史版本可能残留的磁盘记录）
+    // 3. 清存储（会话级 + 历史版本可能残留的磁盘记录 + 续播记录）
     forgetRoom();
+    resumeClear();
     try { sessionStorage.clear(); } catch (e) {}
 
     // 4. 清 Cache Storage（Service Worker 缓存，浏览器支持才清）
@@ -2485,6 +2594,13 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       case 'C':
         wipeTraces();
         break;
+      case 'p':                         // 续播上次看到的进度
+      case 'P': {
+        var rec = resumeLoad();
+        if (!rec) { toast('没有可续播的记录'); break; }
+        resumeApply(rec);
+        break;
+      }
       case 'n':
       case 'N':
         nextDoc();
@@ -2761,6 +2877,14 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 
   // 真正播起来了才把自动重连计数清零，避免刚一连上就重置
   vid.addEventListener('playing', function () { recoverCount = 0; });
+
+  /* 有上次的观看记录就提示一声，等用户按 P 再恢复（不自动播放，避免忽然出声） */
+  setTimeout(function () {
+    var rec = resumeLoad();
+    if (!rec) return;
+    if (vid.src || hlsPlayer || flvPlayer) return;    // 已经在播别的了就别打扰
+    toast('上次看到《' + rec.title + '》' + resumeWhere(rec) + fmt(rec.time) + ' · 按 P 继续', 9000);
+  }, 1200);
 })();
 </script>
 </body>
