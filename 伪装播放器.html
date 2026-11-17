@@ -2245,6 +2245,21 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     return m + ':' + (r < 10 ? '0' : '') + r;
   }
 
+  /* 快进 / 后退：秒数可正可负，基于当前播放位置 */
+  function seekBy(sec) {
+    if (!vid.src && !flvPlayer && !hlsPlayer) { toast('还没有视频在播放'); return; }
+    // 直播流的 duration 是 Infinity，点播是有限值——用它区分，不依赖 liveMode
+    // （点播 m3u8 也走 hls.js，会被 playLive 误标成 liveMode）
+    if (!vid.duration || !isFinite(vid.duration)) {
+      toast('直播流不能快进后退');
+      return;
+    }
+    var target = Math.max(0, Math.min(vid.duration - 0.2, (vid.currentTime || 0) + sec));
+    // 有些源 seek 到未缓冲区会卡，这里只设时间，让浏览器自己缓冲
+    vid.currentTime = target;
+    toast((sec > 0 ? '快进 ' : '后退 ') + Math.abs(sec) + ' 秒 · ' + fmt(target));
+  }
+
   /* ---------- 假关闭：只是变灰块 ---------- */
   adClose.addEventListener('click', function (e) {
     e.stopPropagation();
@@ -2374,17 +2389,23 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       case 'N':
         nextDoc();
         break;
+      case 'ArrowRight':                // 快进 10 秒（Shift 60 秒）
+        e.preventDefault();
+        seekBy(e.shiftKey ? 60 : 10);
+        break;
+      case 'ArrowLeft':                 // 后退 10 秒（Shift 60 秒）
+        e.preventDefault();
+        seekBy(e.shiftKey ? -60 : -10);
+        break;
       case '.':                         // 下一集（含中文输入法下的 》）
       case '>':
       case '》':
-      case 'ArrowRight':
       case 'PageDown':
         if (episodes.length > 1) { e.preventDefault(); gotoEpisode(epIndex + 1); }
         break;
       case ',':                         // 上一集（含中文输入法下的 《）
       case '<':
       case '《':
-      case 'ArrowLeft':
       case 'PageUp':
         if (episodes.length > 1) { e.preventDefault(); gotoEpisode(epIndex - 1); }
         break;
