@@ -161,6 +161,57 @@
     display: block;
     margin: 0 auto;
   }
+  /* 从 PPT 导入的正文：按原幻灯片的字号重建层级，别拍平成一行一句 */
+  .article .doc-slide {
+    margin: 0 0 30px;
+    padding-bottom: 22px;
+    border-bottom: 1px dashed #e6eaef;
+  }
+  .article .doc-slide:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+  .article .doc-slide > h2 { margin-top: 0; }
+  .article .doc-tb { margin: 0 0 10px; }
+  .article .doc-tb:last-child { margin-bottom: 0; }
+  .article .doc-tb p { margin: 0; text-align: left; }
+  /* 超大数字：一张幻灯片的 KPI */
+  .article .doc-tb p.doc-xl {
+    font-size: 34px;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.6px;
+    color: #1c2532;
+    margin: 2px 0 3px;
+  }
+  /* 大标题 / 次级数字 */
+  .article .doc-tb p.doc-lg {
+    font-size: 23px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: #23303f;
+    margin: 6px 0 3px;
+  }
+  /* 小标题 */
+  .article .doc-tb p.doc-md {
+    font-size: 16px;
+    font-weight: 600;
+    color: #2c3a4b;
+    margin: 4px 0 2px;
+  }
+  /* 图注 / 单位 / 小字 */
+  .article .doc-tb p.doc-cap {
+    font-size: 12.5px;
+    color: #78828f;
+    margin: 1px 0;
+  }
+  /* CHAPTER ONE 这类英文标签 */
+  .article .doc-tb p.doc-eyebrow {
+    font-size: 11px;
+    letter-spacing: 1.4px;
+    color: #9aa3b0;
+    margin: 8px 0 2px;
+  }
   .article pre code {
     background: none;
     padding: 0;

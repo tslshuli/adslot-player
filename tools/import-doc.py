@@ -439,6 +439,67 @@ def xlsx_to_html(path, max_rows=200, max_cols=20):
 
 # ------------------------------------------------------------------ pptx
 
+PNS = '{http://schemas.openxmlformats.org/presentationml/2006/main}'
+ANS = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+
+
+def _shape_paras(sp):
+    """取一个文本框里的段落：[(文本, 字号pt, 是否加粗), ...]"""
+    tx = sp.find(PNS + 'txBody')
+    if tx is None:
+        return []
+    res = []
+    for para in tx.iter(ANS + 'p'):
+        texts = []
+        size = 0.0
+        bold = False
+        for el in para.iter():
+            if el.tag == ANS + 't' and el.text:
+                texts.append(el.text)
+            elif el.tag == ANS + 'rPr':
+                sz = el.get('sz')
+                if sz:
+                    try:
+                        size = max(size, int(sz) / 100.0)
+                    except ValueError:
+                        pass
+                if el.get('b') == '1':
+                    bold = True
+        t = ''.join(texts).strip()
+        if t:
+            res.append((t, size, bold))
+    return res
+
+
+def _text_class(text, size):
+    """按 PPT 里的字号还原视觉层级 —— 这是让正文看起来像原文的关键"""
+    if size >= 40:
+        return 'doc-xl'          # 超大数字：一页的 KPI
+    if size >= 24:
+        return 'doc-lg'          # 大标题 / 次级数字
+    if size >= 19:
+        return 'doc-md'          # 小标题 / 百分比之类
+    if size and size < 13:
+        if re.match(r'^[A-Z][A-Z0-9 &/\-]{2,15}$', text):
+            return 'doc-eyebrow'  # CHAPTER ONE 这类标签
+        return 'doc-cap'         # 图注 / 单位
+    # 字号中等但很短的一段话，通常是紧跟数字的说明，别当成正文
+    if len(text) <= 24:
+        return 'doc-cap'
+    return ''
+
+
+def _shape_html(sp):
+    rows = []
+    for text, size, bold in _shape_paras(sp):
+        cls = _text_class(text, size)
+        esc = html.escape(text)
+        rows.append('<p class="%s">%s</p>' % (cls, esc) if cls else '<p>%s</p>' % esc)
+    if not rows:
+        return ''
+    return '<div class="doc-tb">%s</div>' % ''.join(rows)
+
+
 def pptx_to_html(path):
     """按幻灯片顺序遍历，文字、图片、原生图表按原始先后输出"""
     media = []
@@ -455,10 +516,11 @@ def pptx_to_html(path):
             root = ET.fromstring(z.read(s))
             rows = []
             for el in root.iter():
-                if el.tag.endswith('}t'):
-                    t = (el.text or '').strip()
-                    if t:
-                        rows.append('<p>%s</p>' % html.escape(t))
+                # 文本框整体处理（保留字号层级），不再逐条 a:t 拍平
+                if el.tag == PNS + 'sp':
+                    block = _shape_html(el)
+                    if block:
+                        rows.append(block)
                 elif el.tag.endswith('}blip') or el.tag.endswith('}imagedata'):
                     img = media_ref(el, rels, media)
                     if img:
@@ -473,8 +535,8 @@ def pptx_to_html(path):
                         rows.append('<p class="doc-fig">%s</p>' % svg)
             if not rows:
                 continue
-            out.append('<h2>第 %d 页</h2>' % i)
-            out.extend(rows)
+            out.append('<section class="doc-slide"><h2>第 %d 页</h2>%s</section>'
+                       % (i, '\n'.join(rows)))
 
     if chart_total:
         print('  [图表] 共 %d 个，已渲染 %d 个%s'
