@@ -161,6 +161,16 @@
     display: block;
     margin: 0 auto;
   }
+  /* 正文模式：原样网页装进沙箱 iframe */
+  .article iframe.doc-raw {
+    display: block;
+    width: 100%;
+    height: 78vh;
+    min-height: 520px;
+    border: 1px solid #e4e7ec;
+    border-radius: 4px;
+    background: #fff;
+  }
   /* 从 PPT 导入的正文：按原幻灯片的字号重建层级，别拍平成一行一句 */
   .article .doc-slide {
     margin: 0 0 30px;
@@ -960,6 +970,43 @@
     color: #222;
   }
   .lp-esc { font-size: 11px; font-weight: 400; color: #aaa; }
+  /* L 面板的三个标签页 */
+  .lp-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 0 0 13px;
+    border-bottom: 1px solid #e4e7ec;
+  }
+  .lp-tab {
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    padding: 6px 9px 8px;
+    margin-bottom: -1px;
+    font-size: 12.5px;
+    font-family: inherit;
+    color: #78828f;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .lp-tab:hover { color: #1a4d8f; }
+  .lp-tab.on {
+    color: #1a4d8f;
+    font-weight: 700;
+    border-bottom-color: #1a4d8f;
+  }
+  .lp-filebtn {
+    background: #f2f5f9;
+    color: #33465f;
+    border: 1px solid #d8e0ea;
+    border-radius: 4px;
+    padding: 7px 12px;
+    font-size: 12.5px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .lp-filebtn:hover { background: #e6edf6; }
   #liveInput {
     width: 100%;
     border: 1px solid #d8d8d8;
@@ -1642,22 +1689,27 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 <div id="dropHint">松手就播放</div>
 <div id="toast"></div>
 
-<!-- 直播源面板（按 L 呼出） -->
+<!-- 资源入口面板（按 L 呼出）：搜索 / 视频或本地文件 / 正文 -->
 <div id="livePanel">
   <div class="lp-box">
     <div class="lp-head">
-      <span>直播源</span>
+      <span>资源入口</span>
       <span class="lp-esc">Esc 关闭</span>
     </div>
+    <div class="lp-tabs">
+      <button class="lp-tab on" data-mode="search" type="button">资源搜索</button>
+      <button class="lp-tab" data-mode="video" type="button">视频链接或本地路径</button>
+      <button class="lp-tab" data-mode="body" type="button">正文</button>
+    </div>
     <input id="liveInput" type="text" spellcheck="false"
-           placeholder="粘贴直播间链接，或 .flv / .m3u8 直链">
+           placeholder="输入片名，回车搜索全部资源站">
     <div class="lp-foot">
-      <button id="liveGo">开始播放</button>
+      <button id="liveGo">搜索</button>
+      <button id="liveFile" class="lp-filebtn" type="button" style="display:none">选本地文件</button>
+      <input id="liveFileInput" type="file" accept="video/*,.flv,.m3u8,.mp4" style="display:none">
       <span id="liveMsg"></span>
     </div>
-    <div class="lp-tip">
-      直播 / 视频链接会播放视频；其他网页链接会抓取正文；也可把本地视频拖进页面
-    </div>
+    <div class="lp-tip" id="liveTip">输入片名搜索；点结果即播，支持自动连播</div>
   </div>
 </div>
 
@@ -1706,6 +1758,11 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   var liveInput = document.getElementById('liveInput');
   var liveGo = document.getElementById('liveGo');
   var liveMsg = document.getElementById('liveMsg');
+  var liveTip = document.getElementById('liveTip');
+  var liveFile = document.getElementById('liveFile');
+  var liveFileInput = document.getElementById('liveFileInput');
+  var liveTabs = Array.prototype.slice.call(document.querySelectorAll('.lp-tab'));
+  var liveTab = 'search';           // search | video | body（注意别跟直播标志 liveMode 撞名）
 
   var searchPanel = document.getElementById('searchPanel');
   var searchInput = document.getElementById('searchInput');
@@ -1985,17 +2042,56 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     liveMsg.className = cls || '';
   }
 
+  /* L 面板三种模式：各自保留上次输入的内容 */
+  var liveInputs = { search: '', video: '', body: '' };
+
+  function setLiveMode(mode) {
+    liveTab = mode;
+    liveTabs.forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-mode') === mode); });
+    liveFile.style.display = (mode === 'video') ? '' : 'none';
+
+    var cfg = {
+      search: ['输入片名，回车搜索全部资源站', '搜索', '输入片名搜索；点结果即播，支持自动连播'],
+      video:  ['粘贴视频直链（.mp4 / .m3u8 / .flv）或 B站、抖音链接', '开始播放', '本地视频点「选本地文件」；网络链接直接粘贴。R 可重取流'],
+      body:   ['粘贴网页链接，原样显示网页内容', '显示正文', '保留网页原有样式和排版；脚本不会执行，主页面不受影响']
+    }[mode];
+
+    liveInput.placeholder = cfg[0];
+    liveGo.textContent = cfg[1];
+    liveTip.textContent = cfg[2];
+    liveInput.value = liveInputs[mode] || '';
+    setLiveMsg('');
+    try { liveInput.focus(); liveInput.select(); } catch (e) {}
+  }
+
   function openLivePanel() {
     livePanel.classList.add('on');
-    setLiveMsg('');
-    setTimeout(function () { liveInput.focus(); liveInput.select(); }, 30);
+    setLiveMode(liveTab);
   }
 
   function closeLivePanel() {
     livePanel.classList.remove('on');
+    liveInputs[liveTab] = liveInput.value || '';
     // 关键：把焦点移出输入框，否则全局快捷键会被"输入框内不处理"的规则吞掉
     try { if (document.activeElement === liveInput) liveInput.blur(); } catch (e) {}
   }
+
+  liveTabs.forEach(function (b) {
+    b.addEventListener('click', function () {
+      liveInputs[liveTab] = liveInput.value || '';
+      setLiveMode(b.getAttribute('data-mode'));
+    });
+  });
+
+  liveFile.addEventListener('click', function () { liveFileInput.click(); });
+  liveFileInput.addEventListener('change', function () {
+    var f = liveFileInput.files && liveFileInput.files[0];
+    if (!f) return;
+    loadFile(f);
+    closeLivePanel();
+    toast('本地文件已载入：' + f.name.slice(0, 30));
+    liveFileInput.value = '';
+  });
 
   /* ==================== 资源搜索（按 / 呼出） ==================== */
   function openSearchPanel() {
@@ -2319,9 +2415,58 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     gotoEpisode(epIndex + (e.shiftKey ? -1 : 1));
   });
 
-  liveGo.addEventListener('click', startLive);
+  /* 正文模式：抓原样网页，塞进沙箱 iframe —— 样式原封不动，脚本不许跑 */
+  async function showRawPage() {
+    var raw = (liveInput.value || '').trim();
+    if (!raw) { setLiveMsg('先贴个网页链接', 'err'); return; }
+    if (!/^https?:\/\//i.test(raw)) { setLiveMsg('只支持 http/https 链接', 'err'); return; }
+
+    setLiveMsg('正在抓取原样网页…');
+    liveGo.disabled = true;
+    try {
+      var r = await fetch('/raw?u=' + encodeURIComponent(raw));
+      var d = await r.json();
+      if (!d.ok) throw new Error(d.error || '抓取失败');
+      closeLivePanel();
+
+      var safeSrc = String(d.html).replace(/"/g, '&quot;');
+      addDoc({
+        title: d.title || String(raw).replace(/^https?:\/\//, '').slice(0, 40),
+        sub: '原样网页 · ' + String(d.url || raw).replace(/^https?:\/\//, '').slice(0, 60),
+        meta: '',
+        file: null,
+        html: '<iframe class="doc-raw" sandbox="" referrerpolicy="no-referrer" '
+            + 'srcdoc="' + safeSrc + '"></iframe>'
+      });
+      setLiveMsg('已显示原样网页', 'ok');
+      toast('原样网页已加入正文轮换');
+    } catch (e) {
+      setLiveMsg(e.message || '出错了', 'err');
+    } finally {
+      liveGo.disabled = false;
+    }
+  }
+
+  /* L 面板的主按钮：按当前标签分流 */
+  function submitLive() {
+    if (liveTab === 'search') { handOffSearch(); return; }
+    if (liveTab === 'body') { showRawPage(); return; }
+    startLive();
+  }
+
+  /* 搜索模式：把关键词交给现成的资源检索面板，结果和连播逻辑完全复用 */
+  function handOffSearch() {
+    var wd = (liveInput.value || '').trim();
+    if (!wd) { setLiveMsg('输入片名', 'err'); return; }
+    closeLivePanel();
+    openSearchPanel();
+    searchInput.value = wd;
+    doSearch();
+  }
+
+  liveGo.addEventListener('click', submitLive);
   liveInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') startLive();
+    if (e.key === 'Enter') submitLive();
     if (e.key === 'Escape') closeLivePanel();
   });
   livePanel.addEventListener('click', function (e) {
