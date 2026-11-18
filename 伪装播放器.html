@@ -161,16 +161,6 @@
     display: block;
     margin: 0 auto;
   }
-  /* 正文模式：原样网页装进沙箱 iframe */
-  .article iframe.doc-raw {
-    display: block;
-    width: 100%;
-    height: 78vh;
-    min-height: 520px;
-    border: 1px solid #e4e7ec;
-    border-radius: 4px;
-    background: #fff;
-  }
   /* 从 PPT 导入的正文：按原幻灯片的字号重建层级，别拍平成一行一句 */
   .article .doc-slide {
     margin: 0 0 30px;
@@ -578,6 +568,39 @@
   }
 
   /* ================= 左下角广告栏 ================= */
+  /* ---------- 网页铺底模式：外部网页占满窗口，广告栏浮在它上面 ---------- */
+  #pageFrame {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #fff;
+    display: none;
+    z-index: 500;              /* 低于 #adRail 的 999，广告才能盖住网页 */
+  }
+  body.web-mode #pageFrame { display: block; }
+  body.web-mode .topbar,
+  body.web-mode .wrap,
+  body.web-mode .footer-note { display: none !important; }
+  #webExit {
+    position: fixed;
+    top: 10px;
+    right: 12px;
+    z-index: 1000;
+    background: rgba(30, 38, 50, .78);
+    color: #fff;
+    border: 0;
+    border-radius: 4px;
+    padding: 6px 11px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    display: none;
+  }
+  #webExit:hover { background: rgba(20, 28, 38, .9); }
+  body.web-mode #webExit { display: block; }
+
   #adRail {
     position: fixed;
     left: 16px;
@@ -1123,6 +1146,10 @@
 </style>
 </head>
 <body>
+
+<!-- 网页铺底：外部网站占满窗口，广告栏浮在它上面 -->
+<iframe id="pageFrame" title="网页" referrerpolicy="no-referrer"></iframe>
+<button id="webExit" type="button">返回文档</button>
 
 <div class="topbar">
   <div class="topbar-inner">
@@ -1763,6 +1790,8 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   var liveFileInput = document.getElementById('liveFileInput');
   var liveTabs = Array.prototype.slice.call(document.querySelectorAll('.lp-tab'));
   var liveTab = 'search';           // search | video | body（注意别跟直播标志 liveMode 撞名）
+  var pageFrame = document.getElementById('pageFrame');
+  var webExit = document.getElementById('webExit');
 
   var searchPanel = document.getElementById('searchPanel');
   var searchInput = document.getElementById('searchInput');
@@ -2053,7 +2082,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     var cfg = {
       search: ['输入片名，回车搜索全部资源站', '搜索', '输入片名搜索；点结果即播，支持自动连播'],
       video:  ['粘贴视频直链（.mp4 / .m3u8 / .flv）或 B站、抖音链接', '开始播放', '本地视频点「选本地文件」；网络链接直接粘贴。R 可重取流'],
-      body:   ['粘贴网页链接，原样显示网页内容', '显示正文', '保留网页原有样式和排版；脚本不会执行，主页面不受影响']
+      body:   ['粘贴网页链接，网页会铺满整个窗口', '铺满网页', '网页铺底、广告浮在上层；点右上角「返回文档」退出']
     }[mode];
 
     liveInput.placeholder = cfg[0];
@@ -2415,37 +2444,23 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     gotoEpisode(epIndex + (e.shiftKey ? -1 : 1));
   });
 
-  /* 正文模式：抓原样网页，塞进沙箱 iframe —— 样式原封不动，脚本不许跑 */
-  async function showRawPage() {
+  /* 正文模式：网页铺满整个窗口，广告栏浮在它上面（不塞进正文、不进轮换） */
+  function showRawPage() {
     var raw = (liveInput.value || '').trim();
     if (!raw) { setLiveMsg('先贴个网页链接', 'err'); return; }
     if (!/^https?:\/\//i.test(raw)) { setLiveMsg('只支持 http/https 链接', 'err'); return; }
-
-    setLiveMsg('正在抓取原样网页…');
-    liveGo.disabled = true;
-    try {
-      var r = await fetch('/raw?u=' + encodeURIComponent(raw));
-      var d = await r.json();
-      if (!d.ok) throw new Error(d.error || '抓取失败');
-      closeLivePanel();
-
-      var safeSrc = String(d.html).replace(/"/g, '&quot;');
-      addDoc({
-        title: d.title || String(raw).replace(/^https?:\/\//, '').slice(0, 40),
-        sub: '原样网页 · ' + String(d.url || raw).replace(/^https?:\/\//, '').slice(0, 60),
-        meta: '',
-        file: null,
-        html: '<iframe class="doc-raw" sandbox="" referrerpolicy="no-referrer" '
-            + 'srcdoc="' + safeSrc + '"></iframe>'
-      });
-      setLiveMsg('已显示原样网页', 'ok');
-      toast('原样网页已加入正文轮换');
-    } catch (e) {
-      setLiveMsg(e.message || '出错了', 'err');
-    } finally {
-      liveGo.disabled = false;
-    }
+    closeLivePanel();
+    pageFrame.src = raw;
+    document.body.classList.add('web-mode');
+    setLiveMsg('网页已铺满，广告浮在上层', 'ok');
+    toast('网页已铺满 · 右上角「返回文档」可退出');
   }
+
+  function exitWebMode() {
+    document.body.classList.remove('web-mode');
+    try { pageFrame.src = 'about:blank'; } catch (e) {}
+  }
+  webExit.addEventListener('click', exitWebMode);
 
   /* L 面板的主按钮：按当前标签分流 */
   function submitLive() {
