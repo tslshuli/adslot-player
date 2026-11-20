@@ -58,6 +58,7 @@ Windows 用户可以直接双击 `启动伪装播放器.bat`。
 | `https://live.bilibili.com/12345` | B 站直播间，自动取流 |
 | `https://www.bilibili.com/video/BVxxxxxxxxxx` | B 站普通视频，720P 单文件 |
 | `https://www.bilibili.com/video/BVxxx?p=3` | B 站分 P 视频，从第 3 P 开始 |
+| `https://www.bilibili.com/video/av12345` | B 站老式 av 号，自动转成 BV |
 | `https://example.com/xxx.m3u8` | 任意 HLS 流 |
 | 直接把文件拖进页面 | 本地视频 |
 

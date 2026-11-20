@@ -454,7 +454,23 @@ async function resolveBilibiliVideo(videoUrl, opt) {
         String(r0.body || '').match(/BV[0-9A-Za-z]{10}/);
   }
 
-  if (!m) throw new Error('链接里没找到 BV 号，请用完整视频链接');
+  // 老式 av 链接：用官方接口把 avid 换成 bvid，再走同一条路径
+  if (!m) {
+    const am = String(videoUrl).match(/\/av(\d+)/i) ||
+               String(videoUrl).match(/[?&]aid=(\d+)/i);
+    if (am) {
+      const av = JSON.parse((await get('https://api.bilibili.com/x/web-interface/view?aid=' + am[1], {
+        Referer: 'https://www.bilibili.com/'
+      })).body);
+      if (av.code === 0 && av.data && av.data.bvid) {
+        m = [av.data.bvid];
+      } else {
+        throw new Error('这个 av 号查不到：' + (av.message || av.code));
+      }
+    }
+  }
+
+  if (!m) throw new Error('链接里没找到 BV 号或 av 号，请用完整视频链接');
 
   const bvid = m[0];
 
