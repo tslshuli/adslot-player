@@ -622,7 +622,11 @@ async function tvboxSearch(wd) {
     }
   }
 
-  const merged = Array.from(byKey.values()).sort((a, b) => b.score - a.score);
+  // 先按相关度分，同分再按剧名排 —— 否则同分顺序取决于哪个站先回话，
+  // 每次搜索前几名都会乱跳，看起来像"结果不一样"
+  const merged = Array.from(byKey.values()).sort((a, b) =>
+    (b.score - a.score) || String(a.name).localeCompare(String(b.name), 'zh-CN')
+  );
   return {
     sites: sites.length,
     okSites: okSites,
