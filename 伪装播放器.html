@@ -1030,6 +1030,54 @@
     white-space: nowrap;
   }
   .lp-filebtn:hover { background: #e6edf6; }
+
+  /* 历史列表 */
+  #historyList { display: none; margin: 2px 0 4px; }
+  body.lp-history #historyList { display: block; }
+  body.lp-history #liveInput { display: none; }
+  #historyList .hist-empty {
+    padding: 26px 10px;
+    text-align: center;
+    color: #9aa3b0;
+    font-size: 12.5px;
+    line-height: 1.8;
+  }
+  #historyList .hist-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 8px;
+    border-bottom: 1px solid #eef0f3;
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  #historyList .hist-item:hover { background: #f4f7fb; }
+  #historyList .hist-main { flex: 1; min-width: 0; }
+  #historyList .hist-title {
+    font-size: 13px;
+    color: #23303f;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #historyList .hist-sub {
+    font-size: 11px;
+    color: #8b95a3;
+    margin-top: 3px;
+  }
+  #historyList .hist-del {
+    flex: none;
+    background: none;
+    border: 0;
+    color: #b0b8c3;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 5px;
+    font-family: inherit;
+  }
+  #historyList .hist-del:hover { color: #c0392b; }
   #liveInput {
     width: 100%;
     border: 1px solid #d8d8d8;
@@ -1727,9 +1775,11 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       <button class="lp-tab on" data-mode="search" type="button">资源搜索</button>
       <button class="lp-tab" data-mode="video" type="button">视频链接或本地路径</button>
       <button class="lp-tab" data-mode="body" type="button">正文</button>
+      <button class="lp-tab" data-mode="history" type="button">历史</button>
     </div>
     <input id="liveInput" type="text" spellcheck="false"
            placeholder="输入片名，回车搜索全部资源站">
+    <div id="historyList"></div>
     <div class="lp-foot">
       <button id="liveGo">搜索</button>
       <button id="liveFile" class="lp-filebtn" type="button" style="display:none">选本地文件</button>
@@ -1838,8 +1888,9 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     if (!url) return;
     var dur = vid && isFinite(vid.duration) ? vid.duration : 0;
     var t = (dur > 0 && vid.currentTime > 0) ? vid.currentTime : 0;
-    // 什么都没看（刚点开就关）就别留记录了
-    if (t < 3 && !episodes.length) return;
+    // 只要确定了源就记一条（时间可以是 0），否则刚点开就关的直链永远进不了历史。
+    // 真正的进度由后面的 timeupdate / pagehide 再补。
+    if (!url) return;
     var rec = {
       v: 1,
       title: currentTitle || '未命名',
@@ -1852,6 +1903,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       ts: Date.now()
     };
     try { localStorage.setItem(RESUME_KEY, JSON.stringify(rec)); } catch (e) {}
+    historyAdd(rec);
   }
 
   function resumeLoad() {
@@ -1867,6 +1919,78 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 
   function resumeClear() {
     try { localStorage.removeItem(RESUME_KEY); } catch (e) {}
+  }
+
+  /* ---- 观看历史 ----
+     多条记录，按剧名去重：同一个剧再看只更新它的那条，不会刷屏。
+     跟 wbResume 一样落盘，按 c 一起清。 */
+  var HISTORY_KEY = 'wbHistory';
+  var HISTORY_MAX = 30;
+
+  function historyLoad() {
+    try {
+      var s = localStorage.getItem(HISTORY_KEY);
+      if (!s) return [];
+      var arr = JSON.parse(s);
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(function (r) {
+        return r && r.v === 1 && r.title && r.url;
+      }).slice(0, HISTORY_MAX);
+    } catch (e) { return []; }
+  }
+
+  function historyAdd(rec) {
+    if (!rec || !rec.title || !rec.url) return;
+    var arr = historyLoad();
+    var at = -1;
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].title === rec.title) { at = i; break; }
+    }
+    if (at >= 0) arr.splice(at, 1);       // 先删旧的，再插到最前
+    arr.unshift(rec);
+    if (arr.length > HISTORY_MAX) arr.length = HISTORY_MAX;
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); } catch (e) {}
+  }
+
+  function historyClear() {
+    try { localStorage.removeItem(HISTORY_KEY); } catch (e) {}
+  }
+
+  function historyRemove(idx) {
+    var arr = historyLoad();
+    if (idx < 0 || idx >= arr.length) return;
+    arr.splice(idx, 1);
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); } catch (e) {}
+    renderHistory();
+  }
+
+  function historyAgo(ts) {
+    if (!ts) return '';
+    var d = Date.now() - ts;
+    if (d < 60000) return '刚刚';
+    if (d < 3600000) return Math.floor(d / 60000) + ' 分钟前';
+    if (d < 86400000) return Math.floor(d / 3600000) + ' 小时前';
+    if (d < 7 * 86400000) return Math.floor(d / 86400000) + ' 天前';
+    var dt = new Date(ts);
+    return (dt.getMonth() + 1) + '/' + dt.getDate();
+  }
+
+  function renderHistory() {
+    var box = document.getElementById('historyList');
+    if (!box) return;
+    var arr = historyLoad();
+    if (!arr.length) {
+      box.innerHTML = '<div class="hist-empty">还没有播放记录<br>看过视频后会自动记在这里</div>';
+      return;
+    }
+    box.innerHTML = arr.map(function (r, i) {
+      var sub = resumeWhere(r) + fmt(r.time || 0) + ' · ' + historyAgo(r.ts);
+      return '<div class="hist-item" data-i="' + i + '">'
+          + '<div class="hist-main"><div class="hist-title">' + esc(r.title) + '</div>'
+          + '<div class="hist-sub">' + esc(sub) + '</div></div>'
+          + '<button class="hist-del" data-del="' + i + '" title="删除这条" type="button">×</button>'
+          + '</div>';
+    }).join('');
   }
 
   /* 时长解析出来之前 seek 无效，轮询等就绪再跳 */
@@ -2078,11 +2202,14 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     liveTab = mode;
     liveTabs.forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-mode') === mode); });
     liveFile.style.display = (mode === 'video') ? '' : 'none';
+    document.body.classList.toggle('lp-history', mode === 'history');
+    if (mode === 'history') renderHistory();
 
     var cfg = {
-      search: ['输入片名，回车搜索全部资源站', '搜索', '输入片名搜索；点结果即播，支持自动连播'],
-      video:  ['粘贴视频直链（.mp4 / .m3u8 / .flv）或 B站、抖音链接', '开始播放', '本地视频点「选本地文件」；网络链接直接粘贴。R 可重取流'],
-      body:   ['粘贴网页链接，网页会铺满整个窗口', '铺满网页', '网页铺底、广告浮在上层；点右上角「返回文档」退出']
+      search:  ['输入片名，回车搜索全部资源站', '搜索', '输入片名搜索；点结果即播，支持自动连播'],
+      video:   ['粘贴视频直链（.mp4 / .m3u8 / .flv）或 B站、抖音链接', '开始播放', '本地视频点「选本地文件」；网络链接直接粘贴。R 可重取流'],
+      body:    ['粘贴网页链接，网页会铺满整个窗口', '铺满网页', '网页铺底、广告浮在上层；点右上角「返回文档」退出'],
+      history: ['', '清空历史', '点一条直接续播；× 删除单条；按 c 也能一次清干净']
     }[mode];
 
     liveInput.placeholder = cfg[0];
@@ -2466,6 +2593,12 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   function submitLive() {
     if (liveTab === 'search') { handOffSearch(); return; }
     if (liveTab === 'body') { showRawPage(); return; }
+    if (liveTab === 'history') {
+      historyClear();
+      renderHistory();
+      setLiveMsg('历史已清空', 'ok');
+      return;
+    }
     startLive();
   }
 
@@ -2484,6 +2617,30 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     if (e.key === 'Enter') submitLive();
     if (e.key === 'Escape') closeLivePanel();
   });
+
+  /* 历史列表：点条目续播，点 × 删单条 */
+  (function () {
+    var box = document.getElementById('historyList');
+    if (!box) return;
+    box.addEventListener('click', function (e) {
+      var del = e.target.closest ? e.target.closest('[data-del]') : null;
+      if (del) {
+        e.stopPropagation();
+        historyRemove(parseInt(del.getAttribute('data-del'), 10));
+        setLiveMsg('已删除这条', 'ok');
+        return;
+      }
+      var item = e.target.closest ? e.target.closest('.hist-item') : null;
+      if (!item) return;
+      var arr = historyLoad();
+      var rec = arr[parseInt(item.getAttribute('data-i'), 10)];
+      if (!rec) { setLiveMsg('这条记录已失效', 'err'); return; }
+      closeLivePanel();
+      if (document.body.classList.contains('web-mode')) exitWebMode();
+      resumeApply(rec);
+      historyAdd(rec);          // 续播后置顶，顺带刷新时间
+    });
+  })();
   livePanel.addEventListener('click', function (e) {
     if (e.target === livePanel) closeLivePanel();
   });
@@ -2728,9 +2885,10 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     try { updateEpBadge(); } catch (e) {}
     if (empty) empty.classList.remove('hide');
 
-    // 3. 清存储（会话级 + 历史版本可能残留的磁盘记录 + 续播记录）
+    // 3. 清存储（会话级 + 历史版本可能残留的磁盘记录 + 续播记录 + 观看历史）
     forgetRoom();
     resumeClear();
+    historyClear();
     try { sessionStorage.clear(); } catch (e) {}
 
     // 4. 清 Cache Storage（Service Worker 缓存，浏览器支持才清）
