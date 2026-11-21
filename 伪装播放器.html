@@ -2172,8 +2172,14 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         var d = data && data.details;
         if (d) liveMode = !!d.live;
       });
-      // 点播 m3u8 播到最后一个分片时，有的情况 ended 不触发，用这个兜底
-      hlsPlayer.on(window.Hls.Events.BUFFER_EOS, function () { episodeEnded(); });
+      // 点播 m3u8 播到最后一个分片时，有的情况 ended 不触发，用这个兜底。
+      // 注意：BUFFER_EOS 是「缓冲读到清单末尾」，跟播放进度无关 —— 暂停后
+      // 缓冲仍会继续，若不等视频真的播完就切集，切走窗口会误跳下一集。
+      hlsPlayer.on(window.Hls.Events.BUFFER_EOS, function () {
+        if (vid.paused) return;                       // 用户暂停了，别切
+        if (isFinite(vid.duration) && vid.currentTime < vid.duration - 2) return;  // 进度没到末尾
+        episodeEnded();
+      });
       hlsPlayer.loadSource(proxied);
       hlsPlayer.attachMedia(vid);
       hlsPlayer.on(window.Hls.Events.ERROR, function (_, d) {
@@ -2758,6 +2764,10 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
      用时间戳防抖，避免两者同时到达时连跳两集。 */
   var nextAt = 0;
   function episodeEnded() {
+    // 用户手动暂停时，即使 hls.js 的缓冲读到清单末尾(BUFFER_EOS)或误发 ended，
+    // 也不能切集 —— 否则切走窗口看别的，回来发现自动跳到下一集了。
+    // vid.ended 为 true 才是真播完（自然结束），这时才允许连播。
+    if (vid.paused && !vid.ended) return;
     btnPlay.textContent = '▶';
     if (!autoNext || episodes.length <= 1) return;
     if (vid.duration === Infinity) return;        // 真直播，不连播
