@@ -56,6 +56,8 @@ Windows 用户可以直接双击 `启动伪装播放器.bat`。
 |---|---|
 | `https://live.douyin.com/123456` | 抖音直播间，自动取流 |
 | `https://live.bilibili.com/12345` | B 站直播间，自动取流 |
+| `https://www.douyu.com/12345` | 斗鱼直播间，游客取流（字母别名也支持） |
+| `https://www.huya.com/12345` | 虎牙直播间，游客取流（字母别名也支持） |
 | `https://www.bilibili.com/video/BVxxxxxxxxxx` | B 站普通视频，720P 单文件 |
 | `https://www.bilibili.com/video/BVxxx?p=3` | B 站分 P 视频，从第 3 P 开始 |
 | `https://www.bilibili.com/video/av12345` | B 站老式 av 号，自动转成 BV |
@@ -63,6 +65,8 @@ Windows 用户可以直接双击 `启动伪装播放器.bat`。
 | 直接把文件拖进页面 | 本地视频 |
 
 流地址会过期，失效时按 `R` 重新获取。
+
+> **斗鱼/虎牙**：都是游客身份取流，不用登录。斗鱼用官方 H5 接口（`getEncryption` + `getH5PlayV1`），签名描述符缓存 5 分钟；虎牙走移动端 `profileRoom` 接口，按 TX→HW→HS→AL 排线路。房间未开播会明确提示。字母别名链接（如 `douyu.com/abc`）也能自动转成数字房间号。这两家接口会变，失效了告诉我。
 
 ### B 站多集连播
 

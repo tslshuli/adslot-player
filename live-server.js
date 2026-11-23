@@ -14,6 +14,7 @@
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 
 const PORT = Number(process.env.PORT) || 8848;
@@ -88,6 +89,41 @@ function get(targetUrl, headers, redirectsLeft, timeoutMs) {
 
     req.on('error', reject);
     req.setTimeout(timeoutMs, () => req.destroy(new Error('请求超时')));
+    req.end();
+  });
+}
+
+/* POST 表单请求（斗鱼取流接口用），复用 get 的超时/错误处理风格 */
+function postForm(targetUrl, fields, headers, timeoutMs) {
+  timeoutMs = timeoutMs || 15000;
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(targetUrl); } catch (e) { return reject(new Error('URL 不合法: ' + targetUrl)); }
+    const body = new URLSearchParams(fields).toString();
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: Object.assign({
+        'User-Agent': UA,
+        'Accept': 'application/json, text/plain, */*',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body)
+      }, headers || {})
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        headers: res.headers,
+        body: Buffer.concat(chunks).toString('utf8')
+      }));
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('请求超时')));
+    req.write(body);
     req.end();
   });
 }
@@ -240,6 +276,161 @@ async function resolveBilibili(roomUrl) {
   }
 
   return { flv, m3u8, referer: 'https://live.bilibili.com/' };
+}
+
+/* ------------------------------------------------------- 斗鱼直播取流
+   游客身份：getEncryption 拿签名描述符（enc_time=1），
+   再 md5 迭代算 auth，POST getH5PlayV1 拿 flv/m3u8。
+   描述符按 did 缓存 5 分钟，别每次都取。 */
+const DOUYU_DID = '10000000000000000000000000001501';  // 游客固定设备号
+let douyuEnc = null;
+let douyuEncAt = 0;
+
+const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
+
+async function getDouyuEnc(force) {
+  if (!force && douyuEnc && Date.now() - douyuEncAt < 4.5 * 60 * 1000) return douyuEnc;
+  const r = await get('https://www.douyu.com/wgapi/livenc/liveweb/websec/getEncryption?did=' + DOUYU_DID,
+    { Referer: 'https://www.douyu.com/' }, 3, 12000);
+  const j = JSON.parse(r.body);
+  if (j.error !== 0 || !j.data || !j.data.key) throw new Error('斗鱼签名服务异常：' + (j.msg || j.error));
+  douyuEnc = j.data;
+  douyuEncAt = Date.now();
+  return douyuEnc;
+}
+
+function douyuRoomId(input) {
+  const m = String(input).match(/douyu\.com\/(\w+)/);
+  if (!m) throw new Error('斗鱼链接里没找到房间号');
+  if (/^\d+$/.test(m[1])) return m[1];
+  return null;   // 字母别名，调用方去页面解析
+}
+
+async function resolveDouyu(roomUrl) {
+  let alias = douyuRoomId(roomUrl);
+  let rid = alias;
+
+  // 字母别名（如 https://www.douyu.com/xxx）→ 去移动端页面找真实 rid
+  if (!rid) {
+    const m = String(roomUrl).match(/douyu\.com\/(\w+)/);
+    const r = await get('https://m.douyu.com/' + m[1], { 'User-Agent': UA }, 3, 12000);
+    let found = String(r.body).match(/"rid":(\d{1,8})/);
+    if (!found) {
+      const ctx = String(r.body).match(/<script id="vike_pageContext"[^>]*>([\s\S]*?)<\/script>/);
+      if (ctx) {
+        try {
+          const data = JSON.parse(ctx[1]);
+          const info = (((data.pageProps || {}).room || {}).roomInfo || {}).roomInfo || {};
+          if (info.rid) found = [0, String(info.rid)];
+        } catch (e) { /* 忽略 */ }
+      }
+    }
+    if (!found) throw new Error('斗鱼字母别名解析失败，可直接用数字房间号链接');
+    rid = found[1];
+  }
+
+  let enc = await getDouyuEnc();
+  const tt = String(Math.floor(Date.now() / 1000));
+  const sign = async () => {
+    const salt = enc.is_special === 1 ? '' : (rid + tt);
+    let secret = enc.rand_str;
+    for (let i = 0; i < (enc.enc_time || 1); i++) secret = md5(secret + enc.key);
+    return md5(secret + enc.key + salt);
+  };
+  const call = async () => {
+    const auth = await sign();
+    const r = await postForm('https://www.douyu.com/lapi/live/getH5PlayV1/' + rid, {
+      enc_data: enc.enc_data, tt, did: DOUYU_DID, auth,
+      cdn: '', rate: '-1', hevc: '0', fa: '0', ive: '0'
+    }, { Referer: 'https://www.douyu.com/' + rid }, 12000);
+    let j;
+    try { j = JSON.parse(r.body); } catch (e) { throw new Error('斗鱼取流接口返回异常'); }
+    return { j, r };
+  };
+
+  let { j } = await call();
+  // 签名描述符过期（error=401/403 之类）就强制刷新重试一次
+  if (j.error !== 0 && /签名|enc|auth|过期|token/i.test(j.msg || '')) {
+    enc = await getDouyuEnc(true);
+    ({ j } = await call());
+  }
+  if (j.error !== 0) {
+    const msg = j.msg || ('错误码 ' + j.error);
+    if (/未开播/.test(msg)) throw new Error('斗鱼房间当前未开播');
+    throw new Error('斗鱼取流失败：' + msg);
+  }
+
+  const d = j.data || {};
+  const flv = d.flv_url ? [d.flv_url] : [];
+  const m3u8 = d.hls_url ? [d.hls_url] : [];
+  if (!flv.length && !m3u8.length) throw new Error('斗鱼没返回可用流（可能未开播或需登录）');
+  const title = (d.room && d.room.room_name) || '';
+  return { flv, m3u8, referer: 'https://www.douyu.com/', title };
+}
+
+/* ------------------------------------------------------- 虎牙直播取流
+   游客走 mp.huya.com 的 profileRoom 接口，showSecret=1 直接给 antiCode，
+   不用签名、不用 Cookie。UA 要 iOS，否则校验过不了。 */
+const HUYA_UA = 'ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))';
+const HUYA_HEADERS = {
+  'User-Agent': HUYA_UA,
+  'xweb_xhr': '1',
+  'referer': 'https://servicewechat.com/wx74767bf0b684f7d3/301/page-frame.html',
+  'accept-language': 'zh-CN,zh;q=0.9'
+};
+
+async function resolveHuya(roomUrl) {
+  let roomid = (String(roomUrl).match(/huya\.com\/(\d+)/) || [])[1];
+
+  // 字母别名 → 去房间页找真实 roomid
+  if (!roomid) {
+    const alias = (String(roomUrl).match(/huya\.com\/(\w+)/) || [])[1];
+    if (!alias) throw new Error('虎牙链接里没找到房间号');
+    const r = await get('https://www.huya.com/' + alias, { 'User-Agent': HUYA_UA }, 3, 12000);
+    const found = String(r.body).match(/ProfileRoom"?\s*:\s*"?(\d+)/) ||
+                  String(r.body).match(/roomid\s*[:=]\s*"?(\d+)/i);
+    if (!found) throw new Error('虎牙字母别名解析失败，可直接用数字房间号链接');
+    roomid = found[1];
+  }
+
+  const api = 'https://mp.huya.com/cache.php?m=Live&do=profileRoom&roomid=' + roomid + '&showSecret=1';
+  const r = await get(api, HUYA_HEADERS, 3, 12000);
+  let j;
+  try { j = JSON.parse(r.body); } catch (e) { throw new Error('虎牙接口返回异常'); }
+  const d = j.data || {};
+
+  if (d.realLiveStatus !== 'ON') throw new Error('虎牙房间当前未开播');
+
+  const streams = (((d.stream || {}).baseSteamInfoList) || []).slice();
+  if (!streams.length) throw new Error('虎牙没返回可用线路');
+
+  // 线路优先级：TX > HW > HS > AL
+  const rank = { TX: 0, HW: 1, HS: 2, AL: 3 };
+  streams.sort((a, b) => (rank[a.sCdnType] === undefined ? 9 : rank[a.sCdnType])
+                       - (rank[b.sCdnType] === undefined ? 9 : rank[b.sCdnType]));
+
+  const build = (s, base, suffix, anti) => {
+    if (!base || !s.sStreamName || !anti) return '';
+    let u = base.replace(/\/$/, '') + '/' + s.sStreamName + '.' + suffix + '?' + anti;
+    if (s.sCdnType === 'TX') {
+      u = u.replace(/&ctype=tars_mp/g, '&ctype=huya_webh5')
+           .replace(/&fs=bhct/g, '&fs=bgct');
+    }
+    return u.replace(/^http:/, 'https:');
+  };
+
+  const flv = [];
+  const m3u8 = [];
+  streams.forEach((s) => {
+    const f = build(s, s.sFlvUrl, s.sFlvUrlSuffix, s.sFlvAntiCode);
+    const h = build(s, s.sHlsUrl, s.sHlsUrlSuffix, s.sHlsAntiCode);
+    if (f) flv.push(f);
+    if (h) m3u8.push(h);
+  });
+  if (!flv.length && !m3u8.length) throw new Error('虎牙没返回可用流地址');
+
+  const title = (d.liveData && d.liveData.introduction) || (d.profileInfo && d.profileInfo.nick) || '';
+  return { flv, m3u8, referer: 'https://www.huya.com/', title };
 }
 
 /* --------------------------------------------- 网页正文提取 */
@@ -706,6 +897,8 @@ function refererFor(target) {
   const t = String(target).toLowerCase();
   if (t.indexOf('douyin') > -1) return 'https://live.douyin.com/';
   if (t.indexOf('bilivideo') > -1 || t.indexOf('bilibili') > -1) return 'https://live.bilibili.com/';
+  if (t.indexOf('douyu') > -1) return 'https://www.douyu.com/';
+  if (t.indexOf('huya') > -1) return 'https://www.huya.com/';
   return '';
 }
 
@@ -1109,6 +1302,10 @@ const server = http.createServer(async (req, res) => {
         });
       } else if (/douyin\.com/i.test(room)) {
         r = await resolveStream(room);
+      } else if (/douyu\.com/i.test(room)) {
+        r = await resolveDouyu(room);
+      } else if (/huya\.com/i.test(room)) {
+        r = await resolveHuya(room);
       } else {
         throw new Error('暂不支持这个站点，可以直接粘贴 .flv / .m3u8 / .mp4 直链');
       }

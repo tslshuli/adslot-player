@@ -2213,7 +2213,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 
     var cfg = {
       search:  ['输入片名，回车搜索全部资源站', '搜索', '输入片名搜索；点结果即播，支持自动连播'],
-      video:   ['粘贴视频直链（.mp4 / .m3u8 / .flv）或 B站、抖音链接', '开始播放', '本地视频点「选本地文件」；网络链接直接粘贴。R 可重取流'],
+      video:   ['粘贴 B站/抖音/斗鱼/虎牙直播链接，或 .mp4 / .m3u8 直链', '开始播放', '支持 B站、抖音、斗鱼、虎牙、直链；本地视频点「选本地文件」。R 可重取流'],
       body:    ['粘贴网页链接，网页会铺满整个窗口', '铺满网页', '网页铺底、广告浮在上层；点右上角「返回文档」退出'],
       history: ['', '清空历史', '点一条直接续播；× 删除单条；按 c 也能一次清干净']
     }[mode];
@@ -2412,7 +2412,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
         playLive(raw);
         rememberRoom(raw);
         resumeSave();
-      } else if (/douyin\.com|bilibili\.com|b23\.tv/i.test(raw)) {
+      } else if (/douyin\.com|bilibili\.com|b23\.tv|douyu\.com|huya\.com/i.test(raw)) {
         setLiveMsg('正在取流…');
         var resp = await fetch('/resolve?u=' + encodeURIComponent(raw));
         var data = await resp.json();
