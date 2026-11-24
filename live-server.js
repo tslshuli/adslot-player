@@ -342,48 +342,68 @@ async function resolveDouyu(roomUrl) {
     for (let i = 0; i < (enc.enc_time || 1); i++) secret = md5(secret + enc.key);
     return md5(secret + enc.key + salt);
   };
-  const call = async () => {
+  // 斗鱼按清晰度返回不同有效期的地址（实测 2026-11）：
+  //   原画/蓝光 rate=-1/0/4 → expire=300，5 分钟后 CDN 主动断开长连接
+  //   超清 rate=3 / 高清 rate=2 → expire=0，长效不断
+  // flv.js 遇到直播流提前 EOF 不会自动续，所以必须优先拿长效地址，
+  // 用「清晰度降一档」换「不卡死」。用户偏好稳定 > 画质。
+  const pickStream = (d) => {
+    const flv = [];
+    const hls = [];
+    if (d.flv_url) flv.push(d.flv_url);
+    if (d.hls_url) hls.push(d.hls_url);
+    if (!flv.length && d.rtmp_url && d.rtmp_live) {
+      const base = String(d.rtmp_url).replace(/\/$/, '').replace(/^rtmp:\/\//i, 'https://');
+      const live = String(d.rtmp_live).replace(/^\//, '');
+      flv.push(base + '/' + live);
+    }
+    return { flv, hls };
+  };
+  // expire 秒数：0 或无参数视为长效；>600 也够看很久，算可用
+  const leaseOf = (url) => {
+    const m = String(url || '').match(/[?&]expire=(\d+)/);
+    return m ? Number(m[1]) : 0;
+  };
+
+  const call = async (rate) => {
     const auth = await sign();
     const r = await postForm('https://www.douyu.com/lapi/live/getH5PlayV1/' + rid, {
       enc_data: enc.enc_data, tt, did: DOUYU_DID, auth,
-      cdn: '', rate: '-1', hevc: '0', fa: '0', ive: '0'
+      cdn: '', rate, hevc: '0', fa: '0', ive: '0'
     }, { Referer: 'https://www.douyu.com/' + rid }, 12000);
     let j;
     try { j = JSON.parse(r.body); } catch (e) { throw new Error('斗鱼取流接口返回异常'); }
     return { j, r };
   };
 
-  let { j } = await call();
-  // 签名描述符过期（error=401/403 之类）就强制刷新重试一次
-  if (j.error !== 0 && /签名|enc|auth|过期|token/i.test(j.msg || '')) {
-    enc = await getDouyuEnc(true);
-    ({ j } = await call());
-  }
-  if (j.error !== 0) {
-    const msg = j.msg || ('错误码 ' + j.error);
-    if (/未开播/.test(msg)) throw new Error('斗鱼房间当前未开播');
-    throw new Error('斗鱼取流失败：' + msg);
+  let best = null;          // 已找到的可用结果（可能是短效，兜底用）
+  let firstErr = null;
+  for (const rate of ['3', '2', '-1']) {
+    let { j } = await call(rate);
+    // 签名描述符过期就强制刷新重试一次（只针对第一个档位）
+    if (j.error !== 0 && /签名|enc|auth|过期|token/i.test(j.msg || '')) {
+      enc = await getDouyuEnc(true);
+      ({ j } = await call(rate));
+    }
+    if (j.error !== 0) {
+      if (!firstErr) firstErr = j.msg || ('错误码 ' + j.error);
+      if (/未开播/.test(j.msg || '')) throw new Error('斗鱼房间当前未开播');
+      continue;
+    }
+    const d = j.data || {};
+    const s = pickStream(d);
+    if (!s.flv.length && !s.hls.length) {
+      if (d.streamStatus === 0 && !firstErr) firstErr = '房间在播但没画面';
+      continue;
+    }
+    const lease = leaseOf(s.flv[0] || s.hls[0]);
+    const cand = { flv: s.flv, m3u8: s.hls, title: (d.room && d.room.room_name) || roomName || '', lease };
+    if (!best || cand.lease > best.lease) best = cand;
+    if (lease === 0) break;              // 长效地址，直接用
   }
 
-  const d = j.data || {};
-  const flv = [];
-  const m3u8 = [];
-
-  // 新接口（getH5PlayV1）：流地址在 rtmp_url + rtmp_live，要自己拼。
-  // rtmp_url 可能是 https://host:8443/live，拼接后就是可用 flv。
-  if (d.flv_url) flv.push(d.flv_url);
-  if (d.hls_url) m3u8.push(d.hls_url);
-  if (!flv.length && d.rtmp_url && d.rtmp_live) {
-    const base = String(d.rtmp_url).replace(/\/$/, '').replace(/^rtmp:\/\//i, 'https://');
-    const live = String(d.rtmp_live).replace(/^\//, '');
-    flv.push(base + '/' + live);
-  }
-  if (!flv.length && !m3u8.length) {
-    if (d.streamStatus === 0) throw new Error('斗鱼房间在播但没画面');
-    throw new Error('斗鱼没返回可用流（可能未开播或需登录）');
-  }
-  const title = (d.room && d.room.room_name) || roomName || '';
-  return { flv, m3u8, referer: 'https://www.douyu.com/', title };
+  if (!best) throw new Error('斗鱼取流失败：' + (firstErr || '没拿到可用流'));
+  return { flv: best.flv, m3u8: best.m3u8, referer: 'https://www.douyu.com/', title: best.title };
 }
 
 /* ------------------------------------------------------- 虎牙直播取流

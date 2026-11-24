@@ -2049,17 +2049,21 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     liveMode = false;
   }
 
-  /* B 站 / 抖音的播放地址有时效，断了自动重新取一次 */
+  /* B 站 / 抖音 / 斗鱼的播放地址有时效，断了自动重新取一次 */
   var recoverCount = 0;
 
   function autoRecover() {
-    if (recoverCount >= 2) {
+    // 直播一挂就是几小时，2 次重连不够用。给到 8 次、间隔递增；
+    // 只要重新 playing 就把计数清零（见下面 playing 监听），
+    // 所以只有「一直连不上」才会耗尽次数。
+    if (recoverCount >= 8) {
       toast('播放中断了，按 R 手动重试');
       return;
     }
     recoverCount++;
-    toast('连接断了，正在自动重连…');
-    setTimeout(function () { refreshLive(); }, 1200);
+    var delay = Math.min(900 * recoverCount, 5000);
+    toast('连接断了，正在自动重连（第 ' + recoverCount + ' 次）…');
+    setTimeout(function () { refreshLive(); }, delay);
   }
 
   function playLive(rawUrl) {
