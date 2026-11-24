@@ -2859,7 +2859,12 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
   /* ---------- 快捷键 ---------- */
   document.addEventListener('keydown', function (e) {
     var tag = (e.target.tagName || '').toLowerCase();
-    var inField = tag === 'input' || tag === 'textarea' || e.target.isContentEditable;
+    // 只有「能打字」的框才拦按键。进度条 seek 是 input[type=range]，
+    // 点过它就是焦点、若按标签名一刀切会把所有快捷键吞掉（. 切集没反应）。
+    var type = (e.target.getAttribute && e.target.getAttribute('type') || '').toLowerCase();
+    var textInput = tag === 'input' &&
+      (type === '' || ['text', 'search', 'url', 'email', 'password', 'tel', 'number'].indexOf(type) > -1);
+    var inField = textInput || tag === 'textarea' || !!e.target.isContentEditable;
 
     // 中文输入法下标点键会变成全角：。→ . ，→ , 》→ > 《→ <
     var key = e.key;
@@ -2871,7 +2876,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     if (e.code === 'Period') key = '.';
     if (e.code === 'Comma') key = ',';
 
-    // 在输入框里时，所有键都归输入框自己用，不触发全局快捷键。
+    // 在文本输入框里时，所有键都归输入框自己用，不触发全局快捷键。
     // 以前让切集键 . , 穿透，假设"输入框里用不到这些键"——但 L 面板要输入
     // 网址（x.com / a.b）和片名，打个 . 就跳下一集，完全没法正常输入。
     if (inField) {
