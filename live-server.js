@@ -307,22 +307,32 @@ async function resolveDouyu(roomUrl) {
   if (!seg) throw new Error('斗鱼链接里没找到房间号');
 
   let rid = /^\d+$/.test(seg) ? seg : '';
+  let roomName = '';
   try {
     const r = await get('https://m.douyu.com/' + seg, { 'User-Agent': UA }, 3, 12000);
-    let found = String(r.body).match(/"rid":(\d{4,9})/);
-    if (!found) {
-      const ctx = String(r.body).match(/<script id="vike_pageContext"[^>]*>([\s\S]*?)<\/script>/);
-      if (ctx) {
-        try {
-          const data = JSON.parse(ctx[1]);
-          const info = (((data.pageProps || {}).room || {}).roomInfo || {}).roomInfo || {};
-          if (info.rid) found = [0, String(info.rid)];
-        } catch (e) { /* 忽略 */ }
-      }
+    const body = String(r.body || '');
+
+    // 页面里的 vike_pageContext 最准：直接给真实 rid 和房间名
+    const ctx = body.match(/<script id="vike_pageContext"[^>]*>([\s\S]*?)<\/script>/);
+    if (ctx) {
+      try {
+        const data = JSON.parse(ctx[1]);
+        const info = (((data.pageProps || {}).room || {}).roomInfo || {}).roomInfo || {};
+        if (info.rid) { rid = String(info.rid); roomName = info.roomName || info.nickname || ''; }
+      } catch (e) { /* 忽略 */ }
     }
-    if (found) rid = found[1];
+    // 兜底：正则找 "rid":数字（放宽到 1 位，覆盖 66/100/520 这种短真 rid）
+    if (!rid) {
+      const found = body.match(/"rid":(\d{1,9})/);
+      if (found) rid = found[1];
+    }
   } catch (e) { /* 页面拿不到就用原样 rid 再试 */ }
-  if (!rid) throw new Error('斗鱼房间号解析失败，换个完整链接试试');
+  // 数字短号即使映射失败，也保留原号继续试（有的短号本身就是真 rid）；
+  // 只有字母别名没法当 rid 用，才明确报错。
+  if (!rid && !/^\d+$/.test(seg)) {
+    throw new Error('斗鱼字母别名解析失败（可能需要登录），直接用数字房间号链接更稳');
+  }
+  if (!rid) throw new Error('斗鱼链接里没找到房间号');
 
   let enc = await getDouyuEnc();
   const tt = String(Math.floor(Date.now() / 1000));
@@ -372,7 +382,7 @@ async function resolveDouyu(roomUrl) {
     if (d.streamStatus === 0) throw new Error('斗鱼房间在播但没画面');
     throw new Error('斗鱼没返回可用流（可能未开播或需登录）');
   }
-  const title = (d.room && d.room.room_name) || '';
+  const title = (d.room && d.room.room_name) || roomName || '';
   return { flv, m3u8, referer: 'https://www.douyu.com/', title };
 }
 
