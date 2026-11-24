@@ -2930,11 +2930,12 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     if (e.code === 'Period') key = '.';
     if (e.code === 'Comma') key = ',';
 
-    // 在输入框里时：Escape 关面板；切集键照常穿透（输入框里这些键无其他用途）
-    var epKeys = ['.', '>', 'ArrowRight', 'PageDown', ',', '<', 'ArrowLeft', 'PageUp'];
+    // 在输入框里时，所有键都归输入框自己用，不触发全局快捷键。
+    // 以前让切集键 . , 穿透，假设"输入框里用不到这些键"——但 L 面板要输入
+    // 网址（x.com / a.b）和片名，打个 . 就跳下一集，完全没法正常输入。
     if (inField) {
       if (key === 'Escape') { closeLivePanel(); closeSearchPanel(); return; }
-      if (epKeys.indexOf(key) === -1) return;
+      return;
     }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
 
