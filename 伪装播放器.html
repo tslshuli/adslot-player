@@ -240,51 +240,6 @@
   }
   .data-table th { background: #fafafa; font-weight: 600; color: var(--ink-2); font-size: 13px; }
   .data-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
-  .up { color: #c0392b; }
-  .down { color: #1e8449; }
-
-  /* ---------- 正文内嵌广告（横幅） ---------- */
-  .inline-ad {
-    margin: 26px 0;
-    border: 1px solid #e0e0e0;
-    border-radius: 4px;
-    overflow: hidden;
-    position: relative;
-    height: 78px;
-    background: linear-gradient(100deg, #f0f3f7 0%, #e8edf4 55%, #f3f5f8 100%);
-    display: flex;
-    align-items: center;
-    padding: 0 18px;
-    gap: 14px;
-  }
-  .inline-ad .ia-tag {
-    position: absolute;
-    right: 8px;
-    top: 6px;
-    font-size: 9.5px;
-    color: #aaa;
-    letter-spacing: .5px;
-  }
-  .inline-ad .ia-icon {
-    width: 40px; height: 40px;
-    border-radius: 8px;
-    background: linear-gradient(135deg, #3f6ea8, #1a4d8f);
-    color: #fff;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 17px; font-weight: 700;
-    flex: 0 0 auto;
-  }
-  .inline-ad .ia-txt { font-size: 13px; color: #3a4a5c; line-height: 1.55; }
-  .inline-ad .ia-txt b { display: block; font-size: 14.5px; color: #1a3350; margin-bottom: 1px; }
-  .inline-ad .ia-btn {
-    margin-left: auto;
-    flex: 0 0 auto;
-    font-size: 12px;
-    color: #fff;
-    background: #1a4d8f;
-    padding: 5px 13px;
-    border-radius: 3px;
-  }
 
   /* ---------- 右侧竖版广告位 ---------- */
   .side-ads {
@@ -533,29 +488,12 @@
     color: #333;
   }
   .side-list li:last-child { border-bottom: none; }
-  .side-list .no {
-    display: inline-block;
-    width: 16px;
-    color: #bbb;
-    font-weight: 700;
-    font-size: 12px;
-  }
-  .side-list .no.hot { color: #c0392b; }
   .side-list a {
     color: #333;
     text-decoration: none;
   }
   .side-list a:hover { color: var(--brand); }
   .side-list.toc li { padding: 5px 0; font-size: 12.5px; }
-
-  .tag-cloud { display: flex; flex-wrap: wrap; gap: 8px; }
-  .tag-cloud span {
-    font-size: 12px;
-    background: #f2f2f0;
-    color: #555;
-    padding: 3px 9px;
-    border-radius: 3px;
-  }
 
   .footer-note {
     max-width: 1180px;
@@ -1170,7 +1108,6 @@
     padding: 7px 8px; border-bottom: 1px solid #eee; cursor: pointer;
   }
   .sp-item:hover { background: #f4f7fb; }
-  .sp-item.sel { background: #eaf1fa; }
   .sp-name { flex: 1; color: #233; font-size: 13px; }
   .sp-meta { color: #999; font-size: 11px; white-space: nowrap; }
   .sp-ep {

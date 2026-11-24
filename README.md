@@ -253,7 +253,6 @@ PPT 里还有一类「假图片」：**原生图表**（柱形图、饼图、环
              ├── /proxy       转发视频流，补 Referer，处理 Range，改写 m3u8 相对路径
              ├── /docs-list   列出 docs/ 下的文档
              ├── /fetch       抓取网页正文（清洗后）
-             ├── /raw         抓取网页原样 HTML（不清洗，给沙箱 iframe 用）
              └── /save-doc    把抓取内容存入 docs/
 ```
 

@@ -1191,39 +1191,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  /* 抓网页原样 HTML，不清洗：给正文面板用 iframe 沙箱展示 */
-  if (u.pathname === '/raw') {
-    const target = u.searchParams.get('u');
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    if (!target) {
-      res.writeHead(400);
-      return res.end(JSON.stringify({ ok: false, error: '缺少参数 u' }));
-    }
-    try {
-      const r = await get(target);
-      if (r.status !== 200) throw new Error('目标页面返回 HTTP ' + r.status);
-      let html = String(r.body || '');
-      const finalUrl = r.url || target;
-      const titleM = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-      const title = titleM ? titleM[1].replace(/<[^>]+>/g, '').trim() : '';
-
-      // 注入 base：让页面里相对路径的图片/样式还能正确加载
-      if (/<head[^>]*>/i.test(html)) {
-        html = html.replace(/<head([^>]*)>/i,
-          '<head$1><base href="' + finalUrl.replace(/"/g, '%22') + '">');
-      } else {
-        html = '<base href="' + finalUrl.replace(/"/g, '%22') + '">' + html;
-      }
-
-      res.writeHead(200);
-      res.end(JSON.stringify({ ok: true, html: html, url: finalUrl, title: title }));
-    } catch (e) {
-      res.writeHead(200);
-      res.end(JSON.stringify({ ok: false, error: e.message }));
-    }
-    return;
-  }
-
   if (u.pathname === '/save-doc' && req.method === 'POST') {
     let raw = '';
     req.on('data', (c) => {
