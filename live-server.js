@@ -299,22 +299,17 @@ async function getDouyuEnc(force) {
   return douyuEnc;
 }
 
-function douyuRoomId(input) {
-  const m = String(input).match(/douyu\.com\/(\w+)/);
-  if (!m) throw new Error('斗鱼链接里没找到房间号');
-  if (/^\d+$/.test(m[1])) return m[1];
-  return null;   // 字母别名，调用方去页面解析
-}
-
 async function resolveDouyu(roomUrl) {
-  let alias = douyuRoomId(roomUrl);
-  let rid = alias;
+  // 斗鱼的短号/靓号（如 6657、22222）不是真实 rid，必须去房间页换成
+  // 长数字 rid（如 6657 → 6979222），否则接口报「房间被封禁」。
+  // 字母别名同理。所以无论链接里是数字还是字母，统一走一次映射。
+  const seg = (String(roomUrl).match(/douyu\.com\/(\w+)/) || [])[1];
+  if (!seg) throw new Error('斗鱼链接里没找到房间号');
 
-  // 字母别名（如 https://www.douyu.com/xxx）→ 去移动端页面找真实 rid
-  if (!rid) {
-    const m = String(roomUrl).match(/douyu\.com\/(\w+)/);
-    const r = await get('https://m.douyu.com/' + m[1], { 'User-Agent': UA }, 3, 12000);
-    let found = String(r.body).match(/"rid":(\d{1,8})/);
+  let rid = /^\d+$/.test(seg) ? seg : '';
+  try {
+    const r = await get('https://m.douyu.com/' + seg, { 'User-Agent': UA }, 3, 12000);
+    let found = String(r.body).match(/"rid":(\d{4,9})/);
     if (!found) {
       const ctx = String(r.body).match(/<script id="vike_pageContext"[^>]*>([\s\S]*?)<\/script>/);
       if (ctx) {
@@ -325,9 +320,9 @@ async function resolveDouyu(roomUrl) {
         } catch (e) { /* 忽略 */ }
       }
     }
-    if (!found) throw new Error('斗鱼字母别名解析失败，可直接用数字房间号链接');
-    rid = found[1];
-  }
+    if (found) rid = found[1];
+  } catch (e) { /* 页面拿不到就用原样 rid 再试 */ }
+  if (!rid) throw new Error('斗鱼房间号解析失败，换个完整链接试试');
 
   let enc = await getDouyuEnc();
   const tt = String(Math.floor(Date.now() / 1000));
@@ -361,9 +356,22 @@ async function resolveDouyu(roomUrl) {
   }
 
   const d = j.data || {};
-  const flv = d.flv_url ? [d.flv_url] : [];
-  const m3u8 = d.hls_url ? [d.hls_url] : [];
-  if (!flv.length && !m3u8.length) throw new Error('斗鱼没返回可用流（可能未开播或需登录）');
+  const flv = [];
+  const m3u8 = [];
+
+  // 新接口（getH5PlayV1）：流地址在 rtmp_url + rtmp_live，要自己拼。
+  // rtmp_url 可能是 https://host:8443/live，拼接后就是可用 flv。
+  if (d.flv_url) flv.push(d.flv_url);
+  if (d.hls_url) m3u8.push(d.hls_url);
+  if (!flv.length && d.rtmp_url && d.rtmp_live) {
+    const base = String(d.rtmp_url).replace(/\/$/, '').replace(/^rtmp:\/\//i, 'https://');
+    const live = String(d.rtmp_live).replace(/^\//, '');
+    flv.push(base + '/' + live);
+  }
+  if (!flv.length && !m3u8.length) {
+    if (d.streamStatus === 0) throw new Error('斗鱼房间在播但没画面');
+    throw new Error('斗鱼没返回可用流（可能未开播或需登录）');
+  }
   const title = (d.room && d.room.room_name) || '';
   return { flv, m3u8, referer: 'https://www.douyu.com/', title };
 }

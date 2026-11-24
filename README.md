@@ -56,7 +56,7 @@ Windows 用户可以直接双击 `启动伪装播放器.bat`。
 |---|---|
 | `https://live.douyin.com/123456` | 抖音直播间，自动取流 |
 | `https://live.bilibili.com/12345` | B 站直播间，自动取流 |
-| `https://www.douyu.com/12345` | 斗鱼直播间，游客取流（字母别名也支持） |
+| `https://www.douyu.com/6657` | 斗鱼直播间，游客取流（短号/靓号/字母别名都支持） |
 | `https://www.huya.com/12345` | 虎牙直播间，游客取流（字母别名也支持） |
 | `https://www.bilibili.com/video/BVxxxxxxxxxx` | B 站普通视频，720P 单文件 |
 | `https://www.bilibili.com/video/BVxxx?p=3` | B 站分 P 视频，从第 3 P 开始 |
