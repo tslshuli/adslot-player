@@ -2142,6 +2142,7 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
 
   /* B 站 / 抖音 / 斗鱼的播放地址有时效，断了自动重新取一次 */
   var recoverCount = 0;
+  var resumePos = 0;         // 断流/重连前记住看到哪儿，重连后 seek 回去，别从头播
 
   function autoRecover() {
     // 直播一挂就是几小时，2 次重连不够用。给到 8 次、间隔递增；
@@ -2150,6 +2151,10 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     if (recoverCount >= 8) {
       toast('播放中断了，按 R 手动重试');
       return;
+    }
+    // 记住断在哪，重连后跳回去（点播 mp4/m3u8 才有意义，直播 currentTime 无意义）
+    if (vid && isFinite(vid.duration) && vid.currentTime > 3) {
+      resumePos = vid.currentTime;
     }
     recoverCount++;
     var delay = Math.min(900 * recoverCount, 5000);
@@ -2222,6 +2227,18 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
     } else {
       // 兜底：当普通直链处理（B 站点播的 mp4 走这里）
       vid.onerror = function () { autoRecover(); };
+      // mp4 卡住（缓冲不上来）常常不触发 error，也不触发 ended，
+      // 只发一个 stalled 然后干等 —— 监听它，等 8 秒还不动就重连。
+      vid.onstalled = function () {
+        var stuckAt = vid && isFinite(vid.currentTime) ? vid.currentTime : 0;
+        if (stuckAt > 3) { resumePos = stuckAt; resumeSave(); }  // 卡住那一刻先把进度存了
+        setTimeout(function () {
+          // 8 秒内已经继续播了（currentTime 前进）就没事，否则重连
+          if (vid && !vid.paused && Math.abs(vid.currentTime - stuckAt) < 0.3) {
+            autoRecover();
+          }
+        }, 8000);
+      };
       vid.src = proxied;
       vid.play().catch(function () {});
       toast('已开始播放');
@@ -2521,13 +2538,18 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
           epIndex = Math.min(epIndex || 0, episodes.length - 1);
           lastRoom = episodes[epIndex].url;
           updateEpBadge();
-          if (!episodes[epIndex].page) { playLive(episodes[epIndex].url); return; }
+          if (!episodes[epIndex].page) {
+            playLive(episodes[epIndex].url);
+            if (resumePos > 0) { var p1 = resumePos; resumePos = 0; seekWhenReady(p1); }
+            return;
+          }
         }
       }
 
       if (/\.flv(\?|$)/i.test(room) || /\.m3u8(\?|$)/i.test(room) || /\.mp4(\?|$)/i.test(room)) {
         liveReferer = '';
         playLive(room);
+        if (resumePos > 0) { var p2 = resumePos; resumePos = 0; seekWhenReady(p2); }
         return;
       }
       var resp = await resolveCurrent(room);
@@ -2545,6 +2567,12 @@ gdb -p &lt;pid&gt; -batch -ex "thread apply all bt" 2>/dev/null | head -100</cod
       var src = (data.direct && data.direct[0]) || (data.flv && data.flv[0]) || (data.m3u8 && data.m3u8[0]);
       if (!src) throw new Error('没拿到可用地址');
       playLive(src);
+      // 断流重连（R 或自动）要把进度接回去，否则从头播
+      if (resumePos > 0) {
+        var back = resumePos;
+        resumePos = 0;
+        seekWhenReady(back);
+      }
     } catch (e) {
       toast('刷新失败：' + (e.message || '未知错误'));
     }
